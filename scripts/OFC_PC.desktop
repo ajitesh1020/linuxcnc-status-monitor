@@ -1,0 +1,8 @@
+[Desktop Entry]
+Version=1.0
+Terminal=false
+Name=launch OFC_PC
+Exec=bash /home/indus/linuxcnc/scripts/launch_ofc.sh
+Type=Application
+Comment=Desktop Launcher for LinuxCNC OFC_PC — launches status monitor automatically
+Icon=/usr/share/linuxcnc/linuxcncicon.png
