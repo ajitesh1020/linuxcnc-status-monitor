@@ -57,7 +57,7 @@ No external Python packages are required — only stdlib and the `linuxcnc` modu
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-org/linuxcnc-status-monitor.git
+git clone https://github.com/ajitesh1020/linuxcnc-status-monitor.git
 cd linuxcnc-status-monitor
 ```
 
@@ -73,7 +73,7 @@ MONITOR_PC_PORT: int = 5005              # UDP port to send data to
 ### 3. Copy files to your LinuxCNC config directory
 
 ```bash
-INSTALL_DIR="/home/indus/linuxcnc/configs/OFC_PC/indus-ai"
+INSTALL_DIR="/home/user_name/linuxcnc/configs/config_name/script"
 mkdir -p "$INSTALL_DIR"
 cp status.py cycle_time_calculator.py "$INSTALL_DIR/"
 cp scripts/launch_ofc.sh "$INSTALL_DIR/"
@@ -86,18 +86,18 @@ Update the paths inside `scripts/launch_ofc.sh` and `scripts/OFC_PC.desktop` to 
 
 Edit `scripts/OFC_PC.desktop`:
 ```ini
-Exec=bash /home/indus/linuxcnc/configs/OFC_PC/indus-ai/launch_ofc.sh
+Exec=bash /home/user_name/linuxcnc/configs/config_name/indus-ai/launch_ofc.sh
 ```
 
 Copy it to your Desktop:
 ```bash
-cp scripts/OFC_PC.desktop ~/Desktop/
-chmod +x ~/Desktop/OFC_PC.desktop
+cp scripts/axis.desktop ~/Desktop/
+chmod +x ~/Desktop/axis.desktop
 ```
 
 ### 5. Launch
 
-Double-click `OFC_PC.desktop` on the CNC machine desktop.  
+Double-click `axis.desktop` on the CNC machine desktop.  
 LinuxCNC and `status.py` start together. When LinuxCNC closes, `status.py` shuts down automatically.
 
 ---
@@ -123,7 +123,7 @@ It can be activated in two ways — useful for debugging without modifying any s
 |---|---|
 | CLI flag | `python3 status.py --dev` |
 | Env var (one-time) | `CNC_DEV_MODE=1 python3 status.py` |
-| Env var (via launcher) | `CNC_DEV_MODE=1 bash launch_ofc.sh` |
+| Env var (via launcher) | `CNC_DEV_MODE=1 bash launch.sh` |
 | Env var (session) | `export CNC_DEV_MODE=1` then run normally |
 
 When active, you will see this printed immediately:
