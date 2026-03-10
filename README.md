@@ -117,7 +117,7 @@ MONITOR_PC_PORT: int = 5005            # UDP port
 git clone https://github.com/your-org/linuxcnc-status-monitor.git
 cd linuxcnc-status-monitor
 
-INSTALL_DIR="/home/indus/linuxcnc/configs/OFC_PC/indus-ai"
+INSTALL_DIR="/home/user_name/linuxcnc/configs/OFC_PC/indus-ai"
 mkdir -p "$INSTALL_DIR"
 cp status.py cycle_time_calculator.py "$INSTALL_DIR/"
 cp scripts/launch_ofc.sh "$INSTALL_DIR/"
