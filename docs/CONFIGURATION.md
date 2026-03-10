@@ -1,91 +1,89 @@
-# Configuration Reference
+# Configuration Reference  —  v1.2.0
 
-All configuration is done by editing constants at the top of `status.py` and `cycle_time_calculator.py`.  
-No config files or environment setup needed — the values are clearly documented inline.
+All configuration is done by editing constants directly in `status.py` and `cycle_time_calculator.py`.
 
 ---
 
 ## status.py
 
 ```python
-# ── Network ────────────────────────────────────────────────────────────────
-MONITOR_PC_IP: str   = "193.168.0.3"   # IP address of your monitoring PC
-MONITOR_PC_PORT: int = 5005            # UDP port (must be open/unblocked on monitoring PC)
+# ── Network ───────────────────────────────────────────────────────────────
+MONITOR_PC_IP: str   = "193.168.0.3"    # Static IP of monitoring PC
+MONITOR_PC_PORT: int = 5005             # UDP destination port
 
-# ── Timing ─────────────────────────────────────────────────────────────────
-POLL_INTERVAL_S: float = 1.0           # Seconds between status packet broadcasts
-                                        # Lower = more responsive, higher CPU usage
+# ── Timing ────────────────────────────────────────────────────────────────
+POLL_INTERVAL_S: float           = 1.0   # Seconds between active packets
+IDLE_HEARTBEAT_INTERVAL_S: float = 30.0  # Keep-alive interval when idle
+                                          # Set to 0 to disable suppression
 
-# ── Logging ────────────────────────────────────────────────────────────────
-LOG_FILE: str        = "/tmp/cnc_status.log"   # Absolute path to rotating log file
-LOG_MAX_BYTES: int   = 5 * 1024 * 1024         # 5 MB per file before rotation
-LOG_BACKUP_COUNT: int = 3                       # Number of old log files to keep
+# ── G-code file streaming ─────────────────────────────────────────────────
+GCODE_CHUNK_SIZE: int = 50_000          # Max bytes per UDP chunk
+
+# ── Logging ───────────────────────────────────────────────────────────────
+LOG_FILE: str         = "/tmp/cnc_status.log"
+LOG_MAX_BYTES: int    = 5 * 1024 * 1024   # 5 MB per file before rotation
+LOG_BACKUP_COUNT: int = 3                  # Number of rotated files to keep
 ```
-
-### Choosing POLL_INTERVAL_S
-
-| Value | Use case |
-|---|---|
-| `0.5` | Near-real-time dashboards (doubles CPU usage) |
-| `1.0` | **Default — recommended for production** |
-| `2.0` | Low-bandwidth networks or resource-constrained machines |
 
 ---
 
 ## cycle_time_calculator.py
 
 ```python
-MIN_VALID_CYCLE_MS: int    = 1_000    # Cycles shorter than 1 second are discarded
-                                       # Prevents test runs / jogging from counting
-                                       # Increase if your shortest real job > 1s
+MIN_VALID_CYCLE_MS: int = 1_000   # Discard cycles shorter than 1 second
+                                   # Prevents test jogs from counting
+                                   # Increase if shortest real job > 1 s
 
-MAX_HISTORY: int           = 500      # Max completed/aborted cycles stored in memory
-                                       # Older entries are dropped automatically (rolling buffer)
-                                       # 500 cycles ≈ ~50 KB RAM — safe for embedded machines
-
-PART_COUNT_THRESHOLD: float = 0.50   # A cycle counts as a part only if its duration
-                                       # is ≥ 50% of the previous completed cycle
-                                       # Prevents partial re-runs from inflating counts
-                                       # Example: last cycle = 90s → new cycle must be ≥ 45s
+MAX_HISTORY: int = 500            # Max completed/aborted cycles in memory
+                                   # Older entries dropped automatically
 ```
 
-### Tuning PART_COUNT_THRESHOLD
+### No M-code constants
 
-| Value | Behaviour |
-|---|---|
-| `0.0` | Every completed cycle counts (no filtering) |
-| `0.50` | **Default** — filters cycles that are less than half the expected time |
-| `0.80` | Strict — only counts cycles within 80% of the expected time |
-| `1.0` | Exact match required (rarely useful — use only if cycle times are very consistent) |
+As of v1.2.0, `MCODE_PROGRAM_START` and `MCODE_PROGRAM_COMPLETE` have been removed.  
+Program completion is now detected automatically via M2/M30 line scanning — no G-code changes required.
+
+---
+
+## End-Line Detection Tuning
+
+`_GcodeEndDetector` in `status.py` uses these regex patterns (not user-configurable via constants — edit the source if needed):
+
+```python
+# Matches program end lines: M2, M02, M30, M030, or standalone %
+_GCODE_END_RE = re.compile(r"^(m0*2\b|m0*30\b|%\s*$)", re.IGNORECASE)
+
+# Lines skipped when finding first executable line: blank, ;comment, (, O-word, %
+_GCODE_SKIP_RE = re.compile(r"^(\s*$|;|%|\(|o\s*\d)", re.IGNORECASE)
+```
+
+**Run-From-Here tolerance:** a cycle is flagged as mid-program start if:
+```
+motion_line > (first_exec_line + 2)
+```
+The `+2` tolerance accounts for LinuxCNC executing a couple of preamble lines before the first user-visible line. Adjust in `_GcodeEndDetector.is_run_from_here()` if needed.
 
 ---
 
 ## launch_ofc.sh
 
-Edit these variables at the top of the script to match your installation:
-
 ```bash
 LINUXCNC_CONFIG="/home/indus/linuxcnc/configs/OFC_PC/OFC_PC.ini"
 STATUS_SCRIPT="/home/indus/linuxcnc/configs/OFC_PC/indus-ai/status.py"
-LOG_FILE="/tmp/cnc_status_launcher.log"
-```
 
-The script waits 3 seconds after starting LinuxCNC before launching `status.py`.  
-If your machine takes longer to initialise (slow hardware, many axes), increase this:
-
-```bash
-sleep 3   # ← increase to 5 or 10 if status.py starts before LinuxCNC is ready
+sleep 3   # Increase to 5–10 on slower machines
 ```
 
 ---
 
-## Dev Mode
+## udp_receiver.py (monitoring PC)
 
-Dev mode is not a constant — it's activated at runtime.  
-See the main README for full details.
+Controlled by command-line flags — no constants to edit.
 
-| Method | Command |
-|---|---|
-| CLI flag | `python3 status.py --dev` |
-| Env var | `CNC_DEV_MODE=1 python3 status.py` |
-| Via launcher | `CNC_DEV_MODE=1 bash launch_ofc.sh` |
+| Flag | Default | Description |
+|---|---|---|
+| `--port` | `5005` | UDP port to listen on |
+| `--pretty` | off | Pretty JSON + rotating log file |
+| `--log` | `/tmp/udp_receiver_pretty.log` | Log path for `--pretty` mode |
+| `--fields FIELD ...` | — | Print only named fields |
+| `--save-gcode DIR` | — | Save received G-code files to disk |
