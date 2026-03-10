@@ -3,8 +3,8 @@
 # Starts LinuxCNC and status.py together.
 # When LinuxCNC exits (for ANY reason), status.py is cleanly terminated.
 
-LINUXCNC_CONFIG="/home/indus/linuxcnc/configs/OFC_PC/OFC_PC.ini"
-STATUS_SCRIPT="/home/indus/linuxcnc/scripts/status.py"
+LINUXCNC_CONFIG="/home/user_name/linuxcnc/configs/OFC_PC/OFC_PC.ini"
+STATUS_SCRIPT="/home/user_name/linuxcnc/scripts/status.py"
 LOG_FILE="/tmp/cnc_status_launcher.log"
 
 echo "$(date): Launcher started" >> "$LOG_FILE"
