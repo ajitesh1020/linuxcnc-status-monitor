@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-status.py  —  v1.2.0
+status.py  —  v1.3.0
 =====================
 Industrial-grade LinuxCNC status monitor for OFC_PC.
 
@@ -14,30 +14,64 @@ Responsibilities
   4. Detect "Run From Here" mid-program starts via motion_line comparison.
   5. Suppress UDP packets while idle; send one heartbeat every 30 s.
   6. Stream the full G-code file once on load; re-send on file change.
-  7. Collect axis positions, velocities, spindle RPM, NML errors and
-     broadcast as JSON over UDP.
+  7. Passively poll the NML error channel — AXIS always wins the queue race
+     and displays errors to the operator; status.py captures only what
+     AXIS misses (best-effort, not guaranteed).
   8. DEV_MODE via --dev flag OR CNC_DEV_MODE=1 env var.
+
+NML Error Design Decision
+--------------------------
+The LinuxCNC error channel is a NML *queue*. The official documentation
+states:
+
+  "The first consumer of an error message DELETES that message from the
+   queue. Whether another error message consumer (e.g. AXIS) will see the
+   message is dependent on timing. It is recommended to have just one
+   error channel reader task in a setup."
+
+This means: whoever calls error_channel.poll() first gets the message,
+and it is gone for everyone else.
+
+Design choice: AXIS operator visibility takes priority.
+  - status.py polls the error channel ONCE per second in the main loop
+  - AXIS polls much faster and will win the race in most cases
+  - The operator at the machine always sees error notifications
+  - The monitoring PC receives any errors status.py happens to catch
+    (typically during startup before AXIS is polling, or on rare timing wins)
+  - nml_errors in the UDP packet is best-effort, not guaranteed
+  - exec_state in every packet reliably signals an error condition without
+    consuming the queue: exec_state == 1 means EXEC_ERROR
+
+Logging (v1.3.0)
+-----------------
+  Production (no --dev):
+    - Root logger level = WARNING
+    - NullHandler only — no file, no console, zero output
+    - All logger.debug() / logger.info() calls are zero-overhead
+    - Log file is never created or written to
+
+  Dev mode (--dev or CNC_DEV_MODE=1):
+    - Root logger level = DEBUG
+    - Console StreamHandler (stdout)
+    - Rotating file handler → /tmp/cnc_status.log
 
 Program End Detection (No G-code changes required)
 ---------------------------------------------------
-_GcodeEndDetector scans the loaded .ngc file on every file change and finds:
+_GcodeEndDetector scans the loaded .ngc file on every file change:
+  first_exec_line — first non-blank, non-comment, non-%, non-O-word line
+  end_line        — LAST line containing M2, M30, or a standalone %
 
-  first_exec_line  — first line that is not blank / comment / % / O-word
-  end_line         — LAST line containing M2, M30, or a standalone %
-
-During execution, when motion_line >= end_line, signal_cycle_complete() is
-called on the calculator. If the program stops before reaching end_line the
-cycle is recorded as an abort.
+When motion_line >= end_line → signal_cycle_complete() → part counted.
+If program stops before end_line → abort recorded.
 
 Run-From-Here Detection
 -----------------------
-At the moment a new RUNNING state is detected, if motion_line > first_exec_line
-the cycle is flagged as run_from_here and not counted as a completed part.
+If motion_line > first_exec_line + 2 at cycle start → run_from_here flag.
 
 Idle Suppression
 ----------------
   - One packet on IDLE transition edge
-  - Silence until IDLE_HEARTBEAT_INTERVAL_S (default 30 s)
+  - Silence for IDLE_HEARTBEAT_INTERVAL_S (default 30 s)
   - Keep-alive heartbeat every 30 s
   - Full stream resumes immediately when machine becomes active
 
@@ -78,14 +112,14 @@ from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 MONITOR_PC_IP:   str   = "193.168.0.3"
 MONITOR_PC_PORT: int   = 5005
 
-POLL_INTERVAL_S: float          = 1.0    # seconds between active status packets
-IDLE_HEARTBEAT_INTERVAL_S: float = 30.0  # keep-alive interval while idle
+POLL_INTERVAL_S: float           = 1.0    # seconds between active status packets
+IDLE_HEARTBEAT_INTERVAL_S: float = 30.0   # keep-alive interval while idle
 
 LOG_FILE:         str = "/tmp/cnc_status.log"
-LOG_MAX_BYTES:    int = 5 * 1024 * 1024   # 5 MB per file
+LOG_MAX_BYTES:    int = 5 * 1024 * 1024
 LOG_BACKUP_COUNT: int = 3
 
-GCODE_CHUNK_SIZE: int = 50_000   # bytes per G-code UDP chunk
+GCODE_CHUNK_SIZE: int = 50_000
 
 # LinuxCNC task states
 STATE_ESTOP:       int = 1
@@ -98,23 +132,15 @@ MODE_MANUAL: int = 1
 MODE_AUTO:   int = 2
 MODE_MDI:    int = 3
 
-# G-code program-end patterns (case-insensitive, stripped)
-# Matches: M2, M02, M30, M030 with optional comment, or standalone %
-_GCODE_END_RE = re.compile(
-    r"^(m0*2\b|m0*30\b|%\s*$)",
-    re.IGNORECASE,
-)
-# Lines that are NOT executable (skip when finding first_exec_line)
-_GCODE_SKIP_RE = re.compile(
-    r"^(\s*$|;|%|\(|o\s*\d)",
-    re.IGNORECASE,
-)
+# G-code end-line patterns
+_GCODE_END_RE  = re.compile(r"^(m0*2\b|m0*30\b|%\s*$)", re.IGNORECASE)
+_GCODE_SKIP_RE = re.compile(r"^(\s*$|;|%|\(|o\s*\d)", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
-_shutdown_requested: bool  = False
-logger: logging.Logger     = logging.getLogger("cnc_status")
+_shutdown_requested: bool = False
+logger: logging.Logger    = logging.getLogger("cnc_status")
 
 
 # ---------------------------------------------------------------------------
@@ -130,27 +156,41 @@ def _handle_signal(signum: int, _frame) -> None:
 # Logging
 # ---------------------------------------------------------------------------
 def _configure_logging(dev_mode: bool) -> None:
+    """
+    Production (no --dev):
+        root = WARNING + NullHandler only.
+        No file created. No console output. Zero overhead on all log calls.
+
+    Dev mode (--dev or CNC_DEV_MODE=1):
+        root = DEBUG + console StreamHandler + rotating file handler.
+    """
     root = logging.getLogger()
+
+    if not dev_mode:
+        root.setLevel(logging.WARNING)
+        root.addHandler(logging.NullHandler())
+        return
+
     root.setLevel(logging.DEBUG)
-    fmt  = logging.Formatter(
+    fmt = logging.Formatter(
         "%(asctime)s.%(msecs)03d [%(levelname)-8s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.DEBUG)
+    ch.setFormatter(fmt)
+    root.addHandler(ch)
+
     try:
         fh = logging.handlers.RotatingFileHandler(
             LOG_FILE, maxBytes=LOG_MAX_BYTES,
             backupCount=LOG_BACKUP_COUNT, encoding="utf-8",
         )
-        fh.setLevel(logging.DEBUG if dev_mode else logging.WARNING)
+        fh.setLevel(logging.DEBUG)
         fh.setFormatter(fmt)
         root.addHandler(fh)
     except OSError as exc:
         print(f"[WARNING] Cannot open log file {LOG_FILE}: {exc}", file=sys.stderr)
-    if dev_mode:
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setLevel(logging.DEBUG)
-        ch.setFormatter(fmt)
-        root.addHandler(ch)
 
 
 # ---------------------------------------------------------------------------
@@ -160,10 +200,8 @@ def _safe_get(stat: linuxcnc.stat, attr: str, default: Any = None) -> Any:
     try:
         return getattr(stat, attr)
     except AttributeError:
-        logger.debug("Attribute '%s' not on linuxcnc.stat.", attr)
         return default
-    except Exception as exc:
-        logger.warning("Error reading stat.%s: %s", attr, exc)
+    except Exception:
         return default
 
 
@@ -188,34 +226,53 @@ def _is_program_paused(stat: linuxcnc.stat) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# NML error drain — passive, best-effort
+# ---------------------------------------------------------------------------
+def _drain_nml_errors(error_channel: linuxcnc.error_channel) -> List[Dict]:
+    """
+    Drain whatever NML errors status.py happens to catch this tick.
+
+    AXIS will win the queue race in most cases and display errors to the
+    operator. This function captures only what AXIS misses. The result is
+    best-effort: nml_errors in the UDP packet may be empty even when an
+    error occurred.
+
+    Use exec_state == 1 (EXEC_ERROR) in the status packet for a reliable
+    error-condition indicator that does not consume the queue.
+    """
+    errors: List[Dict] = []
+    try:
+        while True:
+            err = error_channel.poll()
+            if err is None:
+                break
+            kind, msg = err
+            errors.append({"kind": kind, "msg": msg.strip()})
+            logger.debug("NML caught [kind=%d]: %s", kind, msg.strip())
+    except Exception as exc:
+        logger.debug("NML drain error: %s", exc)
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # G-code end-line detector
 # ---------------------------------------------------------------------------
 class _GcodeEndDetector:
     """
     Scans the loaded G-code file to find:
-      first_exec_line  — first non-blank, non-comment, non-%, non-O line
-      end_line         — LAST line that matches M2 / M30 / standalone %
+      first_exec_line — first non-blank, non-comment, non-%, non-O-word line
+      end_line        — LAST line matching M2 / M30 / standalone %
 
     No changes to G-code files are required.
-
-    During execution, check_motion_line() signals the calculator when
-    motion_line reaches end_line.
-
-    Run-From-Here: at cycle start, motion_line is compared to first_exec_line.
-    If motion_line > first_exec_line the cycle is a mid-program start.
     """
 
     def __init__(self) -> None:
-        self._file_path:          str = ""
-        self.first_exec_line:     int = 1    # line 1 if not determined
-        self.end_line:            int = -1   # -1 means not found
+        self._file_path:          str  = ""
+        self.first_exec_line:     int  = 1
+        self.end_line:            int  = -1
         self._complete_signalled: bool = False
 
     def load(self, file_path: str) -> None:
-        """
-        Parse file to locate first_exec_line and end_line.
-        Only re-parses when file_path changes.
-        """
         if file_path == self._file_path:
             return
         self._file_path          = file_path
@@ -228,52 +285,34 @@ class _GcodeEndDetector:
         try:
             first_found = False
             last_end    = -1
-
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 for lineno, raw in enumerate(f, start=1):
-                    stripped = raw.strip()
-
-                    # Find first executable line
+                    stripped  = raw.strip()
                     if not first_found and not _GCODE_SKIP_RE.match(stripped):
                         self.first_exec_line = lineno
                         first_found = True
-
-                    # Find LAST end line (M2 / M30 / trailing %)
-                    # Strip inline comments before matching
                     code_part = re.sub(r"\(.*?\)", "", stripped).strip()
                     if _GCODE_END_RE.match(code_part):
                         last_end = lineno
-
             self.end_line = last_end
-
             logger.debug(
                 "End-line scan: file=%s  first_exec=%d  end_line=%d",
-                os.path.basename(file_path),
-                self.first_exec_line,
-                self.end_line,
+                os.path.basename(file_path), self.first_exec_line, self.end_line,
             )
             if self.end_line == -1:
                 logger.warning(
-                    "No M2/M30/%% found in '%s' — "
-                    "program completion cannot be detected; "
-                    "all cycles will be recorded as aborts.",
+                    "No M2/M30/%% in '%s' — all cycles will be aborts.",
                     os.path.basename(file_path),
                 )
         except OSError as exc:
             logger.error("Cannot read G-code file '%s': %s", file_path, exc)
 
     def reset_cycle(self) -> None:
-        """Call at the start of every new cycle to re-arm the detector."""
         self._complete_signalled = False
 
     def check_motion_line(
         self, motion_line: int, calculator: CycleTimeCalculator
     ) -> None:
-        """
-        Call every poll tick while a cycle is running.
-        Fires signal_cycle_complete() exactly once when motion_line
-        reaches the detected end line.
-        """
         if (
             not self._complete_signalled
             and self.end_line != -1
@@ -283,12 +322,6 @@ class _GcodeEndDetector:
             calculator.signal_cycle_complete()
 
     def is_run_from_here(self, motion_line: int) -> bool:
-        """
-        Returns True if motion_line at cycle start indicates a mid-program
-        start (operator used "Run From Here").
-        A tolerance of +2 lines is allowed for pre-amble / tool-call lines
-        that LinuxCNC may execute before the first user line.
-        """
         return motion_line > (self.first_exec_line + 2)
 
 
@@ -296,9 +329,7 @@ class _GcodeEndDetector:
 # Cycle state machine
 # ---------------------------------------------------------------------------
 class _CycleStateMachine:
-    """
-    Edge-triggered: calls calculator methods exactly ONCE per transition.
-    """
+    """Edge-triggered: calls calculator methods exactly ONCE per transition."""
 
     IDLE    = "IDLE"
     RUNNING = "RUNNING"
@@ -327,9 +358,7 @@ class _CycleStateMachine:
                 self._state = self.RUNNING
 
         elif self._state == self.RUNNING:
-            # Check end-line every tick
             self._detector.check_motion_line(motion_line, self._calc)
-
             if is_paused:
                 self._calc.pause_cycle()
                 self._state = self.PAUSED
@@ -353,8 +382,8 @@ class _CycleStateMachine:
 # ---------------------------------------------------------------------------
 def _collect_axis_data(stat: linuxcnc.stat) -> Dict[str, Any]:
     axis_data: Dict[str, Any] = {}
-    axis_mask  = _safe_get(stat, "axis_mask", 0)
-    raw_axes   = _safe_get(stat, "axis", [])
+    axis_mask = _safe_get(stat, "axis_mask", 0)
+    raw_axes  = _safe_get(stat, "axis", [])
     for idx, name in enumerate(["x","y","z","a","b","c","u","v","w"]):
         if axis_mask & (1 << idx) and idx < len(raw_axes):
             a = raw_axes[idx]
@@ -376,11 +405,11 @@ def _collect_joint_data(stat: linuxcnc.stat) -> List[Dict[str, Any]]:
             j = raw_joints[idx]
             joints.append({
                 "id":     idx,
-                "pos":    round(j.get("input",           0.0), 6),
-                "vel":    round(j.get("velocity",         0.0), 6),
-                "homed":  bool(j.get("homed",            False)),
-                "fault":  bool(j.get("fault",            False)),
-                "ferror": round(j.get("ferror_current",  0.0), 6),
+                "pos":    round(j.get("input",          0.0), 6),
+                "vel":    round(j.get("velocity",        0.0), 6),
+                "homed":  bool(j.get("homed",           False)),
+                "fault":  bool(j.get("fault",           False)),
+                "ferror": round(j.get("ferror_current", 0.0), 6),
             })
     return joints
 
@@ -393,12 +422,12 @@ def _collect_spindle_data(stat: linuxcnc.stat) -> List[Dict[str, Any]]:
         if idx < len(raw_spindles):
             s = raw_spindles[idx]
             spindles.append({
-                "id":       idx,
-                "speed":    round(s.get("speed",    0.0), 2),
-                "direction": s.get("direction",      0),
-                "override": round(s.get("override", 1.0), 4),
-                "at_speed": bool(s.get("at_speed",  False)),
-                "enabled":  bool(s.get("enabled",   False)),
+                "id":        idx,
+                "speed":     round(s.get("speed",    0.0), 2),
+                "direction":       s.get("direction",  0),
+                "override":  round(s.get("override", 1.0), 4),
+                "at_speed":  bool(s.get("at_speed",  False)),
+                "enabled":   bool(s.get("enabled",   False)),
             })
     return spindles
 
@@ -453,21 +482,6 @@ def _collect_machine_status(stat: linuxcnc.stat) -> Dict[str, Any]:
     }
 
 
-def _drain_nml_errors(error_channel: linuxcnc.error_channel) -> List[Dict]:
-    errors = []
-    try:
-        while True:
-            err = error_channel.poll()
-            if err is None:
-                break
-            kind, msg = err
-            errors.append({"kind": kind, "msg": msg.strip()})
-            logger.warning("NML error [kind=%d]: %s", kind, msg.strip())
-    except Exception as exc:
-        logger.debug("NML drain exception: %s", exc)
-    return errors
-
-
 # ---------------------------------------------------------------------------
 # G-code file sender
 # ---------------------------------------------------------------------------
@@ -475,7 +489,7 @@ class _GcodeFileSender:
     """Sends full G-code file on load; re-sends only when file changes."""
 
     def __init__(self) -> None:
-        self._sent_fingerprint: Tuple = ("", 0, 0)  # (name, size, mtime_ms)
+        self._sent_fingerprint: Tuple = ("", 0, 0)
 
     def check_and_send(self, stat: linuxcnc.stat, sender: "_UdpSender") -> None:
         meta      = _collect_file_meta(stat)
@@ -529,7 +543,6 @@ class _UdpSender:
                 self._sock.close()
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
-            logger.debug("UDP socket created → %s:%d", self._ip, self._port)
         except OSError as exc:
             logger.error("Failed to create UDP socket: %s", exc)
             self._sock = None
@@ -597,8 +610,10 @@ def main() -> None:
         print(f"[DEV MODE ACTIVE — enabled via {src}]", flush=True)
 
     _configure_logging(dev_mode)
-    logger.info("CNC Status Monitor v1.2.0 starting. dev_mode=%s target=%s:%d",
-                dev_mode, MONITOR_PC_IP, MONITOR_PC_PORT)
+    logger.info(
+        "CNC Status Monitor v1.3.0 starting. dev_mode=%s target=%s:%d",
+        dev_mode, MONITOR_PC_IP, MONITOR_PC_PORT,
+    )
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
@@ -651,7 +666,7 @@ def main() -> None:
                 continue
 
         # ------------------------------------------------------------------
-        # Poll LinuxCNC
+        # Poll LinuxCNC stat channel
         # ------------------------------------------------------------------
         try:
             stat_channel.poll()
@@ -687,13 +702,15 @@ def main() -> None:
             current_cycle_state = "UNKNOWN"
 
         # ------------------------------------------------------------------
-        # Drain NML errors
+        # Passively drain NML errors — AXIS keeps priority on the queue.
+        # Any errors captured here are a bonus; nml_errors=[] is normal.
+        # Use exec_state==1 in the packet for a reliable error indicator.
         # ------------------------------------------------------------------
         if error_channel is not None:
             try:
                 pending_nml_errors.extend(_drain_nml_errors(error_channel))
             except Exception as exc:
-                logger.debug("NML drain error: %s", exc)
+                logger.debug("NML drain outer error: %s", exc)
 
         # ------------------------------------------------------------------
         # Send G-code file if new/changed
@@ -733,20 +750,20 @@ def main() -> None:
                 "ts":    int(time.time_ns() // 1_000_000),
 
                 # Cycle & production
-                "cycle_state":                current_cycle_state,
-                "cycle_time_ms":              snap.current_cycle_ms,
-                "parts_produced":             snap.parts_produced,
-                "abort_count":                snap.abort_count,
-                "run_from_here_count":        snap.run_from_here_count,
-                "last_cycle_ms":              snap.last_completed_ms,
-                "avg_cycle_ms":               snap.average_cycle_ms,
-                "total_completed_cycles":     snap.total_completed_cycles,
-                "cycle_complete_signalled":   snap.cycle_complete_signalled,
-                "is_run_from_here":           snap.is_run_from_here,
+                "cycle_state":              current_cycle_state,
+                "cycle_time_ms":            snap.current_cycle_ms,
+                "parts_produced":           snap.parts_produced,
+                "abort_count":              snap.abort_count,
+                "run_from_here_count":      snap.run_from_here_count,
+                "last_cycle_ms":            snap.last_completed_ms,
+                "avg_cycle_ms":             snap.average_cycle_ms,
+                "total_completed_cycles":   snap.total_completed_cycles,
+                "cycle_complete_signalled": snap.cycle_complete_signalled,
+                "is_run_from_here":         snap.is_run_from_here,
 
-                # End-line info (useful for receiver debugging)
-                "gcode_end_line":             detector.end_line,
-                "gcode_first_exec_line":      detector.first_exec_line,
+                # End-line info
+                "gcode_end_line":           detector.end_line,
+                "gcode_first_exec_line":    detector.first_exec_line,
 
                 # Machine
                 **_collect_machine_status(stat_channel),
@@ -755,14 +772,16 @@ def main() -> None:
                 **_collect_motion_data(stat_channel),
 
                 # Axes / joints / spindles
-                "axis":    _collect_axis_data(stat_channel),
-                "joints":  _collect_joint_data(stat_channel),
+                "axis":     _collect_axis_data(stat_channel),
+                "joints":   _collect_joint_data(stat_channel),
                 "spindles": _collect_spindle_data(stat_channel),
 
                 # File
                 **_collect_file_meta(stat_channel),
 
-                # NML errors
+                # NML errors — best-effort only; [] is normal and expected.
+                # AXIS displays errors to the operator; we only catch extras.
+                # For reliable error detection use: exec_state == 1 (EXEC_ERROR)
                 "nml_errors": pending_nml_errors.copy(),
             }
             pending_nml_errors.clear()
@@ -790,10 +809,9 @@ def main() -> None:
             last_idle_heartbeat = now
 
         logger.debug(
-            "Packet %s (%d bytes) | state=%s parts=%d aborts=%d end_line=%d",
+            "Packet %s (%d bytes) | state=%s parts=%d aborts=%d",
             "SENT" if sent else "FAILED", len(json_bytes),
-            current_cycle_state, snap.parts_produced,
-            snap.abort_count, detector.end_line,
+            current_cycle_state, snap.parts_produced, snap.abort_count,
         )
 
     # -----------------------------------------------------------------------
