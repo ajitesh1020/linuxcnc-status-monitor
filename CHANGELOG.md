@@ -4,100 +4,82 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [1.2.0] — 2025-05-30
-
-### Changed
-
-**Program completion detection — no G-code changes required**
-
-Replaced the M100/M101 custom M-code marker approach (v1.1.0) with automatic
-M2/M30 end-line detection. Custom M-codes caused LinuxCNC to throw
-"unknown M-code" errors unless empty shell scripts were installed per machine.
-
-The new approach:
-- `status.py` scans the loaded `.ngc` file on every file change
-- Finds `first_exec_line` (first non-blank, non-comment line)
-- Finds `end_line` (LAST line matching `M2`, `M30`, or standalone `%`)
-- During execution, when `motion_line >= end_line` → `signal_cycle_complete()`
-- If program stops before `end_line` → abort recorded
-- **Zero changes to G-code files required on any machine**
-
-**`cycle_time_calculator.py`**
-- Renamed `signal_program_start()` → removed (no longer needed)
-- Renamed `signal_program_complete()` → `signal_cycle_complete()` (cleaner API)
-- Renamed snapshot field `program_complete_signalled` → `cycle_complete_signalled`
-- Removed `MCODE_PROGRAM_START` and `MCODE_PROGRAM_COMPLETE` constants
-- Version bumped to v1.2.0
-
-**`status.py`**
-- Replaced `_GcodeMarkerScanner` with `_GcodeEndDetector`
-  - Scans for M2/M30/% using regex `_GCODE_END_RE`
-  - Skips blank/comment/O-word lines to find `first_exec_line`
-  - Inline comment stripping before pattern match (handles `M2 (end)` style)
-  - Run-From-Here tolerance of `+2` lines for LinuxCNC preamble
-- Added `gcode_end_line` and `gcode_first_exec_line` to UDP payload
-- Removed MCODE imports and all M-code related warnings
-- Version bumped to v1.2.0
-
-### Removed
-- `docs/GCODE_MARKERS.md` — M-code marker guide no longer needed
-- `MCODE_PROGRAM_START`, `MCODE_PROGRAM_COMPLETE` constants
-- `signal_program_start()` method from `CycleTimeCalculator`
-
-### Added
-- `signal_cycle_complete()` method on `CycleTimeCalculator`
-- `gcode_end_line` and `gcode_first_exec_line` fields in status packets
-- Warning logged when no M2/M30/% found in loaded file
+## [1.3.0] — 2026-03-13
 
 ### Fixed
-- LinuxCNC "unknown M-code" error that occurred when M100/M101 were present
-  in G-code without corresponding shell scripts in the config directory
+
+**Logging not silent in production**
+
+In v1.2.0 the root logger was set to `DEBUG` unconditionally, then a file
+handler filtered at `WARNING` was added. Log records at DEBUG/INFO were
+still *created* — Python string interpolation in every `logger.debug()`
+call was still executing — just discarded before writing. Zero-overhead
+silence requires the root logger itself to be `WARNING`.
+
+Fix:
+- Production (no `--dev`): `root.setLevel(WARNING)` + `NullHandler` only.
+  No file created. No console output. All `logger.debug()` / `logger.info()`
+  calls short-circuit instantly at the root level — zero overhead.
+- Dev mode (`--dev` or `CNC_DEV_MODE=1`): `root.setLevel(DEBUG)` +
+  console `StreamHandler` + rotating file handler → `/tmp/cnc_status.log`.
+  Log file is only created when dev mode is active.
+
+### Decision: NML errors remain passive (AXIS keeps priority)
+
+`_NmlPoller` (the v1.3.0-pre background thread) was evaluated but rejected.
+
+Root cause of the original bug: LinuxCNC's NML error channel is a
+single-consumer queue. The first caller of `poll()` gets the message and
+it is **permanently deleted** for all other readers. Making `status.py`
+poll faster than AXIS would cause the operator at the CNC machine to stop
+seeing error notifications in the AXIS GUI — a safety concern.
+
+Decision: AXIS keeps priority on the error queue. `status.py` polls
+passively once per second inside the main loop. Any errors caught are
+included in the UDP packet as a bonus; `nml_errors: []` is normal and
+expected. The `exec_state` field in every packet is the reliable way to
+detect an error condition on the monitoring PC — it is read from the
+broadcast stat channel (not the queue) so every reader sees it
+simultaneously without deletion.
+
+exec_state values: `1`=EXEC_ERROR, `2`=EXEC_DONE, `3`=EXEC_WAITING_FOR_MOTION,
+`4`=EXEC_WAITING_FOR_MOTION_QUEUE, `7`=EXEC_WAITING_FOR_PAUSE
 
 ---
 
-## [1.1.0] — 2025-05-30
-
-### Added
-
-**`status.py`**
-- Idle suppression: one packet on IDLE transition, then silent for 30 s,
-  then keep-alive heartbeat (`IDLE_HEARTBEAT_INTERVAL_S`)
-- G-code file streaming: `_GcodeFileSender` sends full `.ngc` file as
-  `type: "gcode_file"` chunks on load; re-sends on file change
-- `_GcodeMarkerScanner`: detects M100/M101 line numbers — replaced in v1.2.0
-- Run-From-Here detection via `motion_line > first_exec_line`
-- New payload fields: `type`, `run_from_here_count`, `program_complete_signalled`,
-  `is_run_from_here`
-- `IDLE_HEARTBEAT_INTERVAL_S` and `GCODE_CHUNK_SIZE` constants
-
-**`cycle_time_calculator.py`**
-- `signal_program_start()` / `signal_program_complete()` methods (replaced in v1.2.0)
-- `start_cycle(run_from_here=True)` parameter
-- `run_from_here_count` counter
-- Extended `CycleSnapshot` with new fields
-
-**`examples/udp_receiver.py`**
-- `--pretty` writes rotating log file (`/tmp/udp_receiver_pretty.log`, 10 MB × 3)
-- `--log PATH` for custom log path
-- `--save-gcode DIR` to save received G-code files to disk
-- Handles `gcode_file` packet type
-
-**`docs/GCODE_MARKERS.md`** *(removed in v1.2.0)*
-
-**`README.md`**
-- Static IP setup procedure for monitoring PC
+## [1.2.0] — 2026-03-13
 
 ### Changed
-- `stop_cycle()` classification changed from duration-heuristic to marker-based
+- Replaced M100/M101 custom M-code approach with automatic M2/M30 end-line
+  detection — no G-code changes required, no shell scripts needed
+- `_GcodeMarkerScanner` → `_GcodeEndDetector` (scans for M2/M30/%)
+- `signal_program_complete()` → `signal_cycle_complete()`
+- `program_complete_signalled` → `cycle_complete_signalled` in snapshot
+
+### Removed
+- `docs/GCODE_MARKERS.md` (M-code approach obsolete)
+- `MCODE_PROGRAM_START`, `MCODE_PROGRAM_COMPLETE` constants
+
+### Fixed
+- LinuxCNC "unknown M-code" error caused by M100/M101 in G-code without
+  corresponding shell scripts in the config directory
 
 ---
 
-## [1.0.0] — 2025-05-30
+## [1.1.0] — 2026-03-13
 
 ### Added
-- `status.py`: polls LinuxCNC stat/error channels, broadcasts JSON via UDP
-- `cycle_time_calculator.py`: thread-safe cycle timing and production counting
-- `scripts/launch_ofc.sh`: ties `status.py` lifetime to LinuxCNC process
-- `scripts/OFC_PC.desktop`: desktop launcher
-- `examples/udp_receiver.py`: monitoring PC receiver (summary/pretty/field modes)
-- Documentation: README, UDP_PAYLOAD, CONFIGURATION, TROUBLESHOOTING
+- Idle suppression: one packet on IDLE transition, then 30 s heartbeat
+- G-code file streaming: `gcode_file` UDP packet type
+- Run-From-Here detection via `motion_line > first_exec_line`
+- `--pretty` log file in `udp_receiver.py`
+- `--save-gcode DIR` in `udp_receiver.py`
+- Static IP setup procedure in README
+
+---
+
+## [1.0.0] — 2026-03-13
+
+### Added
+- Initial release: `status.py`, `cycle_time_calculator.py`,
+  `launch_ofc.sh`, `OFC_PC.desktop`, `udp_receiver.py`
