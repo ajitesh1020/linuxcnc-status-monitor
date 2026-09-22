@@ -6,6 +6,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Work-coordinate positions.** Each axis now also reports `work` — the position
+  in the active work coordinate system (e.g. G54), matching the LinuxCNC DRO —
+  computed as machine position minus g5x/g92/tool offsets. `pos` remains the
+  machine (absolute) position.
+- **Active WCS + offsets** in the status packet: `wcs` (e.g. `"G54"`),
+  `g92_offset`, and `tool_offset` (alongside the existing `g5x_offset`).
+- **`last_abort_ms`** — duration of the most recently aborted cycle, so the
+  dashboard can show abort timing (not just the count).
+
 ### Fixed
 
 - **Axis positions were always 0.** `_collect_axis_data` read the position from

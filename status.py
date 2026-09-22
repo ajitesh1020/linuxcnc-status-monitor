@@ -500,21 +500,45 @@ class _CycleStateMachine:
 # ---------------------------------------------------------------------------
 # Data collectors
 # ---------------------------------------------------------------------------
+# Active work coordinate system name from g5x_index (1=G54 … 9=G59.3).
+_WCS_NAMES = {1: "G54", 2: "G55", 3: "G56", 4: "G57", 5: "G58",
+              6: "G59", 7: "G59.1", 8: "G59.2", 9: "G59.3"}
+
+
+def _wcs_name(g5x_index: Any) -> str:
+    try:
+        return _WCS_NAMES.get(int(g5x_index), "G54")
+    except (TypeError, ValueError):
+        return "G54"
+
+
 def _collect_axis_data(stat: linuxcnc.stat) -> Dict[str, Any]:
     axis_data: Dict[str, Any] = {}
     axis_mask = _safe_get(stat, "axis_mask", 0)
     raw_axes  = _safe_get(stat, "axis", [])
-    # Actual tool position lives in stat.actual_position (a 9-tuple ordered
+    # Machine (absolute) position lives in stat.actual_position (a 9-tuple ordered
     # x,y,z,a,b,c,u,v,w). In LinuxCNC 2.8+ stat.axis[n] holds only velocity and
     # position limits — NOT the position — so reading it there yields 0.0.
     positions = (_safe_get(stat, "actual_position", None)
                  or _safe_get(stat, "position", None) or [])
+    # Work (relative) position = machine - g5x_offset - g92_offset - tool_offset.
+    # This matches the axis readout LinuxCNC shows in the active WCS (e.g. G54).
+    g5x  = _safe_get(stat, "g5x_offset", []) or []
+    g92  = _safe_get(stat, "g92_offset", []) or []
+    tool = _safe_get(stat, "tool_offset", []) or []
+
+    def _offset(i: int) -> float:
+        return ((g5x[i]  if i < len(g5x)  else 0.0)
+                + (g92[i]  if i < len(g92)  else 0.0)
+                + (tool[i] if i < len(tool) else 0.0))
+
     for idx, name in enumerate(["x","y","z","a","b","c","u","v","w"]):
         if axis_mask & (1 << idx) and idx < len(raw_axes):
             a = raw_axes[idx]
             pos = positions[idx] if idx < len(positions) else 0.0
             axis_data[name] = {
-                "pos":           round(pos, 6),
+                "pos":           round(pos, 6),               # machine (absolute)
+                "work":          round(pos - _offset(idx), 6),  # active WCS (relative)
                 "vel":           round(a.get("velocity", 0.0), 6),
                 # Limit keys are camelCase in LinuxCNC 2.8+; keep a snake_case fallback.
                 "min_pos_limit": round(a.get("minPositionLimit",
@@ -604,7 +628,10 @@ def _collect_machine_status(stat: linuxcnc.stat) -> Dict[str, Any]:
         "paused":          bool(_safe_get(stat, "paused",   False)),
         "tool_in_spindle": _safe_get(stat, "tool_in_spindle", 0),
         "g5x_index":       _safe_get(stat, "g5x_index",    0),
+        "wcs":             _wcs_name(_safe_get(stat, "g5x_index", 1)),
         "g5x_offset":      list(_safe_get(stat, "g5x_offset", [])),
+        "g92_offset":      list(_safe_get(stat, "g92_offset", [])),
+        "tool_offset":     list(_safe_get(stat, "tool_offset", [])),
         "gcodes":          list(_safe_get(stat, "gcodes",   [])),
         "mcodes":          list(_safe_get(stat, "mcodes",   [])),
         "settings":        list(_safe_get(stat, "settings", [])),
@@ -901,6 +928,7 @@ def main() -> None:
                 "abort_count":              snap.abort_count,
                 "run_from_here_count":      snap.run_from_here_count,
                 "last_cycle_ms":            snap.last_completed_ms,
+                "last_abort_ms":            snap.last_aborted_ms,
                 "avg_cycle_ms":             snap.average_cycle_ms,
                 "total_completed_cycles":   snap.total_completed_cycles,
                 "cycle_complete_signalled": snap.cycle_complete_signalled,
