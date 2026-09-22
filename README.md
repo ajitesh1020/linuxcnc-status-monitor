@@ -7,6 +7,29 @@ Streams machine state, axis positions, spindle data, cycle times, and production
 
 ---
 
+## This is the free agent. Want the dashboard?
+
+This repository is the **free, open-source agent** that runs on your CNC machine
+and broadcasts its status. It's the safe, read-only half of a two-part system:
+
+- **Agent (this repo, free & GPL)** — runs on the LinuxCNC machine, read-only,
+  streams status over UDP. Use it standalone with the included
+  [`examples/udp_receiver.py`](examples/udp_receiver.py).
+- **LinuxCNC Status Dashboard (paid)** — a desktop app for your office PC that
+  turns this stream into a **live multi-machine grid, historical logging, OEE
+  (Availability × Performance × Quality), and email/Telegram alerts**. No Python
+  needed on the monitoring PC; ships as a Windows `.exe` / Linux AppImage.
+
+  A **free tier** monitors a single machine (live view). Paid tiers add history,
+  OEE, alerts, and multiple machines.
+
+  👉 **Get the dashboard:** _<add your Gumroad/store link here>_
+
+The agent speaks a documented wire protocol ([`PROTOCOL.md`](PROTOCOL.md)), so
+it works with the dashboard or your own receiver.
+
+---
+
 ## Features
 
 - **Zero G-code changes** — program completion detected by scanning for `M2`/`M30` line numbers; no custom M-codes needed
