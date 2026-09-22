@@ -3,7 +3,7 @@
 An industrial-grade, real-time status monitor for [LinuxCNC](https://linuxcnc.org/) machines.  
 Streams machine state, axis positions, spindle data, cycle times, and production counts over UDP — with **zero changes required to your G-code files** and zero risk to the running CNC process.
 
-**Version: 1.2.0**
+**Version: 1.3.0**
 
 ---
 
@@ -27,14 +27,16 @@ Streams machine state, axis positions, spindle data, cycle times, and production
 
 ```
 linuxcnc-status-monitor/
-├── status.py                  # Main application
+├── status.py                  # Main application (the agent)
 ├── cycle_time_calculator.py   # Cycle timing and production counting
+├── config.example.yaml        # Config template — copy to config.yaml
+├── PROTOCOL.md                # Normative UDP wire-protocol spec (agent ↔ dashboard)
 ├── scripts/
 │   ├── launch_ofc.sh          # Launcher: starts LinuxCNC + status.py together
 │   └── OFC_PC.desktop         # Desktop shortcut
 ├── docs/
-│   ├── UDP_PAYLOAD.md         # Full JSON payload reference
-│   ├── CONFIGURATION.md       # All tuneable constants
+│   ├── UDP_PAYLOAD.md         # Human-friendly JSON payload reference
+│   ├── CONFIGURATION.md       # config.yaml key reference
 │   └── TROUBLESHOOTING.md     # Common errors and fixes
 ├── examples/
 │   └── udp_receiver.py        # Receive and display packets on monitoring PC
@@ -100,14 +102,26 @@ ping 10.10.10.1
 
 ---
 
-## Step 2 — Configure status.py
+## Step 2 — Configure with `config.yaml`
 
-Edit the constants at the top of `status.py`:
+No code editing. Copy the template and edit the values:
 
-```python
-MONITOR_PC_IP:  str = "193.168.0.3"   # your monitoring PC static IP
-MONITOR_PC_PORT: int = 5005            # UDP port
+```bash
+cp config.example.yaml config.yaml
 ```
+
+```yaml
+monitor_pc_ip: "193.168.0.3"   # your monitoring PC static IP
+monitor_pc_port: 5005          # UDP port
+machine_name: "VMC-01"         # shown in the dashboard's multi-machine view
+poll_interval_s: 1.0
+idle_heartbeat_interval_s: 30.0
+```
+
+`status.py` loads `config.yaml` from its own directory automatically, or point at
+another path with `python3 status.py --config /path/to/config.yaml`. If the file
+is missing, built-in defaults are used. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+for all keys.
 
 ---
 
@@ -122,6 +136,9 @@ mkdir -p "$INSTALL_DIR"
 cp status.py cycle_time_calculator.py "$INSTALL_DIR/"
 cp scripts/launch_ofc.sh "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/launch_ofc.sh"
+
+# Create the config from the template, then edit it (see Step 2)
+cp config.example.yaml "$INSTALL_DIR/config.yaml"
 ```
 
 Update paths inside `scripts/launch_ofc.sh` and `scripts/OFC_PC.desktop`, then copy the launcher:

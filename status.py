@@ -78,7 +78,7 @@ If motion_line > first_exec_line + 2 at cycle start → run_from_here flag.
 Idle Suppression
 ----------------
   - One packet on IDLE transition edge
-  - Silence for IDLE_HEARTBEAT_INTERVAL_S (default 30 s)
+  - Silence for idle_heartbeat_interval_s from config.yaml (default 30 s)
   - Keep-alive heartbeat every 30 s
   - Full stream resumes immediately when machine becomes active
 
@@ -114,19 +114,132 @@ except ImportError:
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 
 # ---------------------------------------------------------------------------
-# Configuration — edit for your installation
+# Protocol
 # ---------------------------------------------------------------------------
-MONITOR_PC_IP:   str   = "193.168.0.3"
-MONITOR_PC_PORT: int   = 5005
+PROTOCOL_VERSION: int = 1   # wire-format version — see PROTOCOL.md
 
-POLL_INTERVAL_S: float           = 1.0    # seconds between active status packets
-IDLE_HEARTBEAT_INTERVAL_S: float = 30.0   # keep-alive interval while idle
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+# All tunables live in config.yaml (see config.example.yaml). The values below
+# are the built-in fallbacks used when a key is missing or no config file is
+# found, so the agent always starts even with zero configuration.
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "monitor_pc_ip":             "193.168.0.3",   # monitoring PC static IP
+    "monitor_pc_port":           5005,            # UDP port on the monitoring PC
+    "machine_name":              "",              # identifies this machine to the dashboard
+    "poll_interval_s":           1.0,             # seconds between active status packets
+    "idle_heartbeat_interval_s": 30.0,            # keep-alive interval while idle
+    "gcode_chunk_size":          50_000,          # bytes per G-code file chunk
+    "log_file":                  "/tmp/cnc_status.log",
+    "log_max_bytes":             5 * 1024 * 1024,
+    "log_backup_count":          3,
+}
 
-LOG_FILE:         str = "/tmp/cnc_status.log"
-LOG_MAX_BYTES:    int = 5 * 1024 * 1024
-LOG_BACKUP_COUNT: int = 3
+# Searched when --config is not given: config.yaml next to this script.
+DEFAULT_CONFIG_PATH: str = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "config.yaml"
+)
 
-GCODE_CHUNK_SIZE: int = 50_000
+
+def _coerce(value: Any, template: Any) -> Any:
+    """Coerce a loaded value to the type of its default (best-effort)."""
+    if isinstance(template, bool):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+    if isinstance(template, int):
+        return int(value)
+    if isinstance(template, float):
+        return float(value)
+    return str(value)
+
+
+def _parse_flat_yaml(text: str) -> Dict[str, Any]:
+    """
+    Minimal zero-dependency parser for a FLAT 'key: value' YAML file.
+
+    Supports comments (#), blank lines, quoted or bare string scalars, ints,
+    floats and booleans. Nested structures are NOT supported — this config is
+    intentionally flat. Used only when PyYAML is not installed.
+    """
+    out: Dict[str, Any] = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip()
+        val = val.strip()
+        if not key:
+            continue
+        if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
+            out[key] = val[1:-1]
+            continue
+        low = val.lower()
+        if low in ("true", "false"):
+            out[key] = (low == "true")
+        elif low in ("null", "~", ""):
+            out[key] = ""
+        else:
+            try:
+                out[key] = int(val)
+            except ValueError:
+                try:
+                    out[key] = float(val)
+                except ValueError:
+                    out[key] = val
+    return out
+
+
+def load_config(path: Optional[str]) -> Dict[str, Any]:
+    """
+    Load configuration, layering config.yaml over DEFAULT_CONFIG.
+
+    Prefers PyYAML if installed; otherwise uses the built-in flat parser so the
+    zero-dependency guarantee holds. A missing file, unreadable file, or any
+    parse error logs a warning and falls back to defaults — the agent must
+    always start.
+    """
+    cfg: Dict[str, Any] = dict(DEFAULT_CONFIG)
+    cfg_path = path or DEFAULT_CONFIG_PATH
+
+    if not os.path.isfile(cfg_path):
+        if path:  # user explicitly pointed at a file that isn't there
+            logger.warning("Config file not found: %s — using defaults.", cfg_path)
+        else:
+            logger.info("No config.yaml at %s — using built-in defaults.", cfg_path)
+        return cfg
+
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as exc:
+        logger.warning("Cannot read config %s: %s — using defaults.", cfg_path, exc)
+        return cfg
+
+    try:
+        try:
+            import yaml  # type: ignore
+            loaded = yaml.safe_load(text) or {}
+            if not isinstance(loaded, dict):
+                raise ValueError("top-level YAML is not a mapping")
+        except ImportError:
+            loaded = _parse_flat_yaml(text)
+    except Exception as exc:
+        logger.warning("Config parse error in %s: %s — using defaults.", cfg_path, exc)
+        return cfg
+
+    for key, default in DEFAULT_CONFIG.items():
+        if key in loaded and loaded[key] is not None:
+            try:
+                cfg[key] = _coerce(loaded[key], default)
+            except (TypeError, ValueError):
+                logger.warning("Bad value for '%s' in config — keeping default %r.",
+                               key, default)
+
+    logger.info("Loaded config from %s", cfg_path)
+    return cfg
 
 # LinuxCNC task states
 STATE_ESTOP:       int = 1
@@ -162,7 +275,7 @@ def _handle_signal(signum: int, _frame) -> None:
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-def _configure_logging(dev_mode: bool) -> None:
+def _configure_logging(dev_mode: bool, cfg: Dict[str, Any]) -> None:
     """
     Production (no --dev):
         root = WARNING + NullHandler only.
@@ -190,14 +303,14 @@ def _configure_logging(dev_mode: bool) -> None:
 
     try:
         fh = logging.handlers.RotatingFileHandler(
-            LOG_FILE, maxBytes=LOG_MAX_BYTES,
-            backupCount=LOG_BACKUP_COUNT, encoding="utf-8",
+            cfg["log_file"], maxBytes=cfg["log_max_bytes"],
+            backupCount=cfg["log_backup_count"], encoding="utf-8",
         )
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(fmt)
         root.addHandler(fh)
     except OSError as exc:
-        print(f"[WARNING] Cannot open log file {LOG_FILE}: {exc}", file=sys.stderr)
+        print(f"[WARNING] Cannot open log file {cfg['log_file']}: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +608,9 @@ def _collect_machine_status(stat: linuxcnc.stat) -> Dict[str, Any]:
 class _GcodeFileSender:
     """Sends full G-code file on load; re-sends only when file changes."""
 
-    def __init__(self) -> None:
+    def __init__(self, chunk_size: int, machine_name: str) -> None:
+        self._chunk_size:       int   = chunk_size
+        self._machine_name:     str   = machine_name
         self._sent_fingerprint: Tuple = ("", 0, 0)
 
     def check_and_send(self, stat: linuxcnc.stat, sender: "_UdpSender") -> None:
@@ -512,12 +627,14 @@ class _GcodeFileSender:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
-            total_chunks = max(1, (len(content) + GCODE_CHUNK_SIZE - 1) // GCODE_CHUNK_SIZE)
+            total_chunks = max(1, (len(content) + self._chunk_size - 1) // self._chunk_size)
             for idx in range(total_chunks):
-                chunk  = content[idx * GCODE_CHUNK_SIZE:(idx + 1) * GCODE_CHUNK_SIZE]
+                chunk  = content[idx * self._chunk_size:(idx + 1) * self._chunk_size]
                 packet = json.dumps({
                     "type":             "gcode_file",
+                    "proto":            PROTOCOL_VERSION,
                     "ts":               int(time.time_ns() // 1_000_000),
+                    "machine_name":     self._machine_name,
                     "file_name":        meta["file_name"],
                     "file_size":        meta["file_size"],
                     "file_modified_ms": meta["file_modified_ms"],
@@ -595,6 +712,10 @@ def _parse_args() -> argparse.Namespace:
         "--dev", action="store_true", default=False,
         help="Enable verbose DEBUG logging to console and file.",
     )
+    parser.add_argument(
+        "--config", metavar="PATH", default=None,
+        help="Path to config.yaml (default: config.yaml next to this script).",
+    )
     return parser.parse_args()
 
 
@@ -616,10 +737,16 @@ def main() -> None:
         src = "--dev flag" if args.dev else "CNC_DEV_MODE env var"
         print(f"[DEV MODE ACTIVE — enabled via {src}]", flush=True)
 
-    _configure_logging(dev_mode)
+    cfg = load_config(args.config)
+    _configure_logging(dev_mode, cfg)
+
+    poll_interval_s           = cfg["poll_interval_s"]
+    idle_heartbeat_interval_s = cfg["idle_heartbeat_interval_s"]
+    machine_name              = cfg["machine_name"]
+
     logger.info(
-        "CNC Status Monitor v1.3.0 starting. dev_mode=%s target=%s:%d",
-        dev_mode, MONITOR_PC_IP, MONITOR_PC_PORT,
+        "CNC Status Monitor v1.3.0 starting. dev_mode=%s machine=%r target=%s:%d",
+        dev_mode, machine_name, cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
     )
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -628,8 +755,8 @@ def main() -> None:
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     detector      = _GcodeEndDetector()
     state_machine = _CycleStateMachine(calculator, detector)
-    sender        = _UdpSender(MONITOR_PC_IP, MONITOR_PC_PORT)
-    gcode_sender  = _GcodeFileSender()
+    sender        = _UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"])
+    gcode_sender  = _GcodeFileSender(cfg["gcode_chunk_size"], machine_name)
 
     stat_channel:  Optional[linuxcnc.stat]          = None
     error_channel: Optional[linuxcnc.error_channel] = None
@@ -662,7 +789,7 @@ def main() -> None:
     while not _shutdown_requested:
         now = time.monotonic()
 
-        if now - last_poll_time < POLL_INTERVAL_S:
+        if now - last_poll_time < poll_interval_s:
             time.sleep(0.05)
             continue
         last_poll_time = now
@@ -736,7 +863,7 @@ def main() -> None:
             if state_changed:
                 idle_packet_sent    = False
                 last_idle_heartbeat = now
-            if idle_packet_sent and (now - last_idle_heartbeat) < IDLE_HEARTBEAT_INTERVAL_S:
+            if idle_packet_sent and (now - last_idle_heartbeat) < idle_heartbeat_interval_s:
                 prev_cycle_state = current_cycle_state
                 pending_nml_errors.clear()
                 logger.debug("IDLE — packet suppressed.")
@@ -753,8 +880,10 @@ def main() -> None:
             snap: CycleSnapshot = calculator.snapshot()
 
             payload: Dict[str, Any] = {
-                "type":  "status",
-                "ts":    int(time.time_ns() // 1_000_000),
+                "type":         "status",
+                "proto":        PROTOCOL_VERSION,
+                "ts":           int(time.time_ns() // 1_000_000),
+                "machine_name": machine_name,
 
                 # Cycle & production
                 "cycle_state":              current_cycle_state,

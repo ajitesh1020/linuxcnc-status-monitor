@@ -4,6 +4,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **License: relicensed from MIT to GPL-2.0-or-later.** The agent imports the
+  GPL-licensed LinuxCNC Python module, so a program linking it must be GPL. The
+  prior MIT license (with a blank copyright holder) was incorrect. Added
+  copyright + SPDX headers to all source files.
+- **Configuration moved to `config.yaml`** — no more editing constants in
+  `status.py`. Copy `config.example.yaml` to `config.yaml` and edit. A `--config`
+  flag selects an alternate path; missing files fall back to built-in defaults.
+  PyYAML is used if installed, else a built-in flat parser keeps the agent
+  dependency-free.
+
+### Added
+
+- **`PROTOCOL.md`** — the normative, versioned UDP wire-protocol spec shared by
+  the agent and the dashboard. `docs/UDP_PAYLOAD.md` is now a companion reference.
+- Every packet now carries **`proto`** (protocol version, currently `1`) and
+  **`machine_name`** (from config), so the dashboard can detect version drift and
+  distinguish machines in a multi-machine view. Both are additive/backward-compatible.
+- `.gitignore` (ignores the local `config.yaml`, Python caches, and logs).
+
+---
+
 ## [1.3.0] — 2026-03-13
 
 ### Fixed

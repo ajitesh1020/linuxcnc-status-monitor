@@ -1,0 +1,43 @@
+# -----------------------------------------------------------------------------
+# LinuxCNC Status Monitor — agent configuration
+# -----------------------------------------------------------------------------
+# Copy this file to "config.yaml" (next to status.py) and edit the values.
+# No code editing is required.
+#
+#   cp config.example.yaml config.yaml
+#
+# status.py loads config.yaml automatically. Point at a different file with:
+#   python3 status.py --config /path/to/config.yaml
+#
+# If config.yaml is missing, the agent falls back to the built-in defaults
+# shown below, so it always starts. Unknown keys are ignored.
+#
+# PyYAML is used if installed; otherwise a built-in parser reads this flat file.
+# Keep it flat (no nested/indented structures).
+# -----------------------------------------------------------------------------
+
+# Static IP of the monitoring PC that receives the UDP status stream.
+monitor_pc_ip: "193.168.0.3"
+
+# UDP port on the monitoring PC.
+monitor_pc_port: 5005
+
+# A name for THIS machine, shown in the dashboard's multi-machine view.
+# Leave "" if you only run one machine. Example: "VMC-01" or "Router-Bay-3".
+machine_name: ""
+
+# Seconds between status packets while the machine is active. 1.0 is typical.
+poll_interval_s: 1.0
+
+# Seconds between keep-alive packets while the machine is idle.
+idle_heartbeat_interval_s: 30.0
+
+# Bytes per chunk when streaming the loaded G-code file (kept under the UDP limit).
+gcode_chunk_size: 50000
+
+# Log file path (only written in dev mode: --dev or CNC_DEV_MODE=1).
+log_file: "/tmp/cnc_status.log"
+
+# Rotating log settings (dev mode only).
+log_max_bytes: 5242880   # 5 MiB
+log_backup_count: 3

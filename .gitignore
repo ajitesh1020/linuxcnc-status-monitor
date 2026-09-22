@@ -1,0 +1,13 @@
+# Local deployment config — copy config.example.yaml to config.yaml and edit.
+# The live config holds a machine-specific IP and is not committed.
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Logs
+*.log
