@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Run From Here now continues the cycle timer** instead of restarting it. When a
+  run is stopped before M2/M30 the elapsed time is carried; the next Run From Here
+  resumes from that time, and if it reaches the end line it is **counted as a
+  part** with the full (carried + continued) duration. A fresh start from the top
+  resets the clock. Aborts are still recorded when a fresh run is stopped early
+  (with the time carried so it can be resumed). Added a calculator test suite.
+
 ### Added
 
 - **Work-coordinate positions.** Each axis now also reports `work` — the position
