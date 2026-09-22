@@ -1,29 +1,42 @@
-# Configuration Reference  —  v1.2.0
+# Configuration Reference  —  v1.3.0
 
-All configuration is done by editing constants directly in `status.py` and `cycle_time_calculator.py`.
+The agent is configured with a **`config.yaml`** file — no code editing required.
+Copy the template and edit it:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+`status.py` loads `config.yaml` from the same directory automatically. Use a
+different path with `--config`:
+
+```bash
+python3 status.py --config /etc/cnc/config.yaml
+```
+
+If `config.yaml` is missing or a key is absent, the built-in defaults (below) are
+used, so the agent always starts. PyYAML is used if installed; otherwise a
+built-in parser reads the flat file (keep it flat — no nested structures).
 
 ---
 
-## status.py
+## config.yaml keys
 
-```python
-# ── Network ───────────────────────────────────────────────────────────────
-MONITOR_PC_IP: str   = "193.168.0.3"    # Static IP of monitoring PC
-MONITOR_PC_PORT: int = 5005             # UDP destination port
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `monitor_pc_ip` | string | `"193.168.0.3"` | Static IP of the monitoring PC |
+| `monitor_pc_port` | int | `5005` | UDP destination port |
+| `machine_name` | string | `""` | Identifies this machine in the dashboard's multi-machine view |
+| `poll_interval_s` | float | `1.0` | Seconds between status packets while active |
+| `idle_heartbeat_interval_s` | float | `30.0` | Keep-alive interval while idle |
+| `gcode_chunk_size` | int | `50000` | Max bytes per UDP G-code chunk |
+| `log_file` | string | `"/tmp/cnc_status.log"` | Log path (dev mode only) |
+| `log_max_bytes` | int | `5242880` | Rotate log after this many bytes (dev mode) |
+| `log_backup_count` | int | `3` | Rotated log files to keep (dev mode) |
 
-# ── Timing ────────────────────────────────────────────────────────────────
-POLL_INTERVAL_S: float           = 1.0   # Seconds between active packets
-IDLE_HEARTBEAT_INTERVAL_S: float = 30.0  # Keep-alive interval when idle
-                                          # Set to 0 to disable suppression
-
-# ── G-code file streaming ─────────────────────────────────────────────────
-GCODE_CHUNK_SIZE: int = 50_000          # Max bytes per UDP chunk
-
-# ── Logging ───────────────────────────────────────────────────────────────
-LOG_FILE: str         = "/tmp/cnc_status.log"
-LOG_MAX_BYTES: int    = 5 * 1024 * 1024   # 5 MB per file before rotation
-LOG_BACKUP_COUNT: int = 3                  # Number of rotated files to keep
-```
+`machine_name`, `poll_interval_s`, `idle_heartbeat_interval_s`,
+`monitor_pc_ip`/`monitor_pc_port` and `gcode_chunk_size` map to fields and cadence
+described in [`PROTOCOL.md`](../PROTOCOL.md).
 
 ---
 

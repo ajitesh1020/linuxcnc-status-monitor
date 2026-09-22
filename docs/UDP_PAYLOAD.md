@@ -1,4 +1,7 @@
-# UDP Payload Reference  —  v1.2.0
+# UDP Payload Reference  —  v1.3.0
+
+> The authoritative, versioned wire contract is [`../PROTOCOL.md`](../PROTOCOL.md).
+> This file is a human-friendly companion reference.
 
 Two packet types, distinguished by the `"type"` field.
 
@@ -20,7 +23,9 @@ Two packet types, distinguished by the `"type"` field.
 | Field | Type | Description |
 |---|---|---|
 | `type` | string | Always `"status"` |
+| `proto` | integer | Protocol version (currently `1`) — see PROTOCOL.md |
 | `ts` | integer (ms) | Unix epoch timestamp in milliseconds |
+| `machine_name` | string | Machine identifier from `config.yaml` (`""` if unset) |
 
 ### Cycle & Production
 
@@ -123,7 +128,9 @@ Empty `[]` when no errors are pending.
 ```json
 {
   "type":             "gcode_file",
+  "proto":            1,
   "ts":               1748563200000,
+  "machine_name":     "VMC-01",
   "file_name":        "part_A.ngc",
   "file_size":        20480,
   "file_modified_ms": 1748500000000,
