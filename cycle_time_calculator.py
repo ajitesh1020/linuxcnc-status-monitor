@@ -127,6 +127,11 @@ class CycleTimeCalculator:
         self._abort_count:         int = 0
         self._run_from_here_count: int = 0
 
+        # Carried elapsed time (ms) from an incomplete cycle, so that a
+        # subsequent "Run From Here" continues timing instead of restarting.
+        # Reset to 0 on a fresh start-from-beginning and on a completed part.
+        self._carry_ms:            int = 0
+
         self._log(logging.DEBUG,
                   "CycleTimeCalculator v1.2.0 initialised (dev_mode=%s)", dev_mode)
 
@@ -145,6 +150,8 @@ class CycleTimeCalculator:
                 self._log(logging.WARNING,
                           "start_cycle() called but cycle already running — ignoring.")
                 return
+            if not run_from_here:
+                self._carry_ms = 0  # fresh run from the top starts the clock at 0
             self._state = _CycleState(
                 start_ns=time.perf_counter_ns(),
                 running=True,
@@ -154,9 +161,9 @@ class CycleTimeCalculator:
             if run_from_here:
                 self._run_from_here_count += 1
                 self._log(logging.WARNING,
-                          "Cycle STARTED mid-program (Run From Here #%d). "
-                          "Will NOT count as a part.",
-                          self._run_from_here_count)
+                          "Cycle CONTINUED mid-program (Run From Here #%d), "
+                          "carrying %d ms from the interrupted run.",
+                          self._run_from_here_count, self._carry_ms)
             else:
                 self._log(logging.INFO, "Cycle STARTED from beginning.")
 
@@ -230,31 +237,40 @@ class CycleTimeCalculator:
                       "run_from_here=%s",
                       duration_ms, complete, rfh)
 
-            if duration_ms < MIN_VALID_CYCLE_MS:
+            if duration_ms < MIN_VALID_CYCLE_MS and self._carry_ms == 0:
                 self._log(logging.WARNING,
                           "Cycle %d ms < minimum %d ms — discarded.",
                           duration_ms, MIN_VALID_CYCLE_MS)
 
-            elif rfh:
-                self._log(logging.WARNING,
-                          "Run-From-Here cycle ended at %d ms — "
-                          "not counted as part.", duration_ms)
-
             elif complete:
+                # Reached M2/M30 — a part, whether run from the top or continued
+                # via Run From Here. Total time includes any carried segments.
                 self._completed_durations_ms.append(duration_ms)
                 self._parts_produced += 1
+                self._carry_ms = 0
                 self._log(logging.INFO,
-                          "Part COUNTED (#%d). Cycle time: %d ms.",
-                          self._parts_produced, duration_ms)
+                          "Part COUNTED (#%d). Cycle time: %d ms%s.",
+                          self._parts_produced, duration_ms,
+                          " (incl. carried time)" if rfh else "")
+
+            elif rfh:
+                # A continuation that itself did not finish — keep the accumulated
+                # time so a further Run From Here continues, without an abort.
+                self._carry_ms = duration_ms
+                self._log(logging.WARNING,
+                          "Run-From-Here segment stopped at %d ms — carried for "
+                          "continuation (no abort).", duration_ms)
 
             else:
-                # Program did not reach M2/M30 — abort
+                # Fresh run stopped before M2/M30 — abort. Carry the elapsed time so
+                # the operator can resume it later with Run From Here.
                 self._abort_count += 1
                 if duration_ms >= MIN_VALID_CYCLE_MS:
                     self._aborted_durations_ms.append(duration_ms)
+                self._carry_ms = duration_ms
                 self._log(logging.WARNING,
                           "End line NOT reached — ABORT recorded (#%d). "
-                          "Duration: %d ms.",
+                          "Duration: %d ms (carried for Run From Here).",
                           self._abort_count, duration_ms)
 
             self._state = _CycleState()   # reset for next cycle
@@ -272,6 +288,7 @@ class CycleTimeCalculator:
             self._abort_count += 1
             if duration_ms >= MIN_VALID_CYCLE_MS:
                 self._aborted_durations_ms.append(duration_ms)
+            self._carry_ms = duration_ms  # resumable via Run From Here
             self._log(logging.WARNING,
                       "Cycle ABORTED (explicit) at %d ms. Total aborts: %d.",
                       duration_ms, self._abort_count)
@@ -329,6 +346,7 @@ class CycleTimeCalculator:
             self._parts_produced      = 0
             self._abort_count         = 0
             self._run_from_here_count = 0
+            self._carry_ms            = 0
             self._log(logging.INFO, "All stats RESET by operator.")
 
     # ------------------------------------------------------------------
@@ -348,7 +366,8 @@ class CycleTimeCalculator:
             active_ns = (now_ns
                          - self._state.start_ns
                          - self._state.total_paused_ns)
-        return max(0, active_ns // MS_PER_NS)
+        # Include any carried time from an interrupted run being continued.
+        return max(0, active_ns // MS_PER_NS) + self._carry_ms
 
     def _log(self, level: int, msg: str, *args) -> None:
         """Log only in DEV_MODE or for WARNING+ messages."""
