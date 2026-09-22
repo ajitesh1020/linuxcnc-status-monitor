@@ -83,6 +83,7 @@ class CycleSnapshot:
     total_completed_cycles: int
     cycle_complete_signalled: bool         # True if end-line was reached
     is_run_from_here: bool                 # True if cycle started mid-program
+    last_aborted_ms: Optional[int] = None  # most recent aborted cycle duration
 
 
 @dataclass
@@ -289,6 +290,8 @@ class CycleTimeCalculator:
             avg        = (sum(self._completed_durations_ms) /
                           len(self._completed_durations_ms)
                           if self._completed_durations_ms else None)
+            last_abort = (self._aborted_durations_ms[-1]
+                          if self._aborted_durations_ms else None)
             return CycleSnapshot(
                 is_running=self._state.running,
                 is_paused=self._state.paused,
@@ -301,6 +304,7 @@ class CycleTimeCalculator:
                 total_completed_cycles=len(self._completed_durations_ms),
                 cycle_complete_signalled=self._state.cycle_complete_signalled,
                 is_run_from_here=self._state.is_run_from_here,
+                last_aborted_ms=last_abort,
             )
 
     def get_completed_durations(self) -> List[int]:

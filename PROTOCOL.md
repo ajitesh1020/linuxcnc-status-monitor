@@ -79,6 +79,7 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `abort_count` | integer | count | Cycles that ended before reaching M2/M30 |
 | `run_from_here_count` | integer | count | Cycles started mid-program via "Run From Here" |
 | `last_cycle_ms` | integer \| null | ms | Duration of the most recently completed part cycle |
+| `last_abort_ms` | integer \| null | ms | Duration of the most recently aborted cycle |
 | `avg_cycle_ms` | float \| null | ms | Rolling average of completed cycle durations |
 | `total_completed_cycles` | integer | count | Total cycles that produced a part |
 | `cycle_complete_signalled` | boolean | — | `true` if the M2/M30 end line was reached this cycle |
@@ -98,8 +99,11 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `enabled` | boolean | `true` if drives are powered |
 | `paused` | boolean | `true` if feed hold is active |
 | `tool_in_spindle` | integer | Currently loaded tool number |
-| `g5x_index` | integer | Active WCS (`1`=G54 … `6`=G59) |
-| `g5x_offset` | float[] | Work-coordinate offset `[X,Y,Z,A,B,C,U,V,W]` |
+| `g5x_index` | integer | Active WCS index (`1`=G54 … `9`=G59.3) |
+| `wcs` | string | Active WCS name, e.g. `"G54"` (derived from `g5x_index`) |
+| `g5x_offset` | float[] | Active WCS offset `[X,Y,Z,A,B,C,U,V,W]` |
+| `g92_offset` | float[] | G92 offset `[X,Y,Z,A,B,C,U,V,W]` |
+| `tool_offset` | float[] | Tool length/diameter offset `[X,Y,Z,A,B,C,U,V,W]` |
 | `gcodes` | integer[] | Active modal G-codes |
 | `mcodes` | integer[] | Active modal M-codes |
 | `settings` | float[] | Modal settings `[sequence, feed, speed, …]` |
@@ -130,7 +134,8 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 
 | Sub-field | Type | Description |
 |---|---|---|
-| `pos` | float (6dp) | Commanded/input position |
+| `pos` | float (6dp) | **Machine** (absolute) position, from `actual_position` |
+| `work` | float (6dp) | **Work** (relative) position in the active WCS = `pos − g5x − g92 − tool` |
 | `vel` | float (6dp) | Axis velocity |
 | `min_pos_limit` | float (4dp) | Soft lower limit |
 | `max_pos_limit` | float (4dp) | Soft upper limit |
@@ -258,3 +263,4 @@ VPN or equivalent.
 | `proto` | Date | Change |
 |---|---|---|
 | 1 | 2026-09 | Initial formal spec. Adds `proto` and `machine_name` to all packets (additive over the pre-spec v1.2.0 payload). |
+| 1 | 2026-09 | Additive: per-axis `work` position; `wcs`, `g92_offset`, `tool_offset` in machine state; `last_abort_ms`. No version bump (additive). |
