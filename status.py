@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+#
+# Copyright (c) 2025-2026 Ajitesh Kannojia (CNC Tool Tech)
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# This file is part of linuxcnc-status-monitor. It is free software under the
+# GNU General Public License v2 or later. See the LICENSE file for details.
+# It links the GPL-licensed LinuxCNC Python module and is therefore GPL.
 """
 status.py  —  v1.3.0
 =====================

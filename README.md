@@ -324,4 +324,12 @@ See [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**GPL-2.0-or-later** — see [LICENSE](LICENSE).
+
+Copyright (c) 2025-2026 Ajitesh Kannojia (CNC Tool Tech).
+
+This agent imports the LinuxCNC Python module (`import linuxcnc`), which is
+licensed under the GNU General Public License. A program that links GPL code
+must itself be distributed under the GPL, so this project is GPL — not MIT.
+The paid monitoring dashboard is a **separate, independent program** that
+communicates only over the network (UDP/JSON) and is not covered by this license.
