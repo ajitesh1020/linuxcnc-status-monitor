@@ -504,14 +504,23 @@ def _collect_axis_data(stat: linuxcnc.stat) -> Dict[str, Any]:
     axis_data: Dict[str, Any] = {}
     axis_mask = _safe_get(stat, "axis_mask", 0)
     raw_axes  = _safe_get(stat, "axis", [])
+    # Actual tool position lives in stat.actual_position (a 9-tuple ordered
+    # x,y,z,a,b,c,u,v,w). In LinuxCNC 2.8+ stat.axis[n] holds only velocity and
+    # position limits — NOT the position — so reading it there yields 0.0.
+    positions = (_safe_get(stat, "actual_position", None)
+                 or _safe_get(stat, "position", None) or [])
     for idx, name in enumerate(["x","y","z","a","b","c","u","v","w"]):
         if axis_mask & (1 << idx) and idx < len(raw_axes):
             a = raw_axes[idx]
+            pos = positions[idx] if idx < len(positions) else 0.0
             axis_data[name] = {
-                "pos":           round(a.get("input",              0.0), 6),
-                "vel":           round(a.get("velocity",           0.0), 6),
-                "min_pos_limit": round(a.get("min_position_limit", 0.0), 4),
-                "max_pos_limit": round(a.get("max_position_limit", 0.0), 4),
+                "pos":           round(pos, 6),
+                "vel":           round(a.get("velocity", 0.0), 6),
+                # Limit keys are camelCase in LinuxCNC 2.8+; keep a snake_case fallback.
+                "min_pos_limit": round(a.get("minPositionLimit",
+                                             a.get("min_position_limit", 0.0)), 4),
+                "max_pos_limit": round(a.get("maxPositionLimit",
+                                             a.get("max_position_limit", 0.0)), 4),
             }
     return axis_data
 

@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Axis positions were always 0.** `_collect_axis_data` read the position from
+  `stat.axis[n]["input"]`, but in LinuxCNC 2.8+ the per-axis dict has no position
+  (only velocity + limits) — the actual position is in `stat.actual_position`.
+  Positions are now read from there. Also read the camelCase limit keys
+  (`minPositionLimit`/`maxPositionLimit`) with a snake_case fallback. Confirmed
+  against LinuxCNC 2.9.10.
+
 ### Changed
 
 - **License: relicensed from MIT to GPL-2.0-or-later.** The agent imports the
