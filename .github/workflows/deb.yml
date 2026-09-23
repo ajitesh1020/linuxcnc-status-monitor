@@ -41,7 +41,9 @@ jobs:
           test -x /usr/bin/lcnc-status-agent
           test -f /usr/lib/systemd/user/lcnc-status-agent.service
           systemctl --global is-enabled lcnc-status-agent.service
-          python3 -m py_compile /usr/share/linuxcnc-status-agent/*.py
+          python3 -c 'import ast,sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' \
+            /usr/share/linuxcnc-status-agent/*.py
+          cat /usr/share/linuxcnc-status-agent/config.example.yaml > /dev/null
           sudo apt-get remove -y linuxcnc-status-agent
           ! systemctl --global is-enabled lcnc-status-agent.service
 
