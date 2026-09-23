@@ -1,29 +1,38 @@
 # -----------------------------------------------------------------------------
 # LinuxCNC Status Monitor — agent configuration
 # -----------------------------------------------------------------------------
-# Copy this file to "config.yaml" (next to status.py) and edit the values.
-# No code editing is required.
+# Location: ~/linuxcnc-monitor-agent/config.yaml
+#   Created automatically the first time the agent runs. Package upgrades
+#   never overwrite it.
 #
-#   cp config.example.yaml config.yaml
+# After editing, apply the change with:
+#   systemctl --user restart lcnc-status-agent
 #
-# status.py loads config.yaml automatically. Point at a different file with:
-#   python3 status.py --config /path/to/config.yaml
+# Check what the agent will do (config file, name, where packets go):
+#   lcnc-status-agent --check
 #
-# If config.yaml is missing, the agent falls back to the built-in defaults
-# shown below, so it always starts. Unknown keys are ignored.
-#
-# PyYAML is used if installed; otherwise a built-in parser reads this flat file.
-# Keep it flat (no nested/indented structures).
+# Missing keys fall back to the defaults shown here; unknown keys are ignored.
+# Keep the file flat (no nested/indented structures).
 # -----------------------------------------------------------------------------
 
-# Static IP of the monitoring PC that receives the UDP status stream.
-monitor_pc_ip: "193.168.0.3"
+# Where to send the status stream. Comma-separated list of:
+#   auto            broadcast on the local network (recommended) — every
+#                   dashboard on the same LAN / Wi-Fi receives it, whatever its
+#                   IP is. No static IP needed, nothing to change when the
+#                   monitoring PC's address changes.
+#   192.168.0.50    a fixed IP (only if broadcast is blocked on your network)
+#   office-pc.local a host name, looked up again every 30 s
+monitor_pc_ip: "auto"
 
-# UDP port on the monitoring PC.
+# UDP port the dashboard listens on.
 monitor_pc_port: 5005
 
-# A name for THIS machine, shown in the dashboard's multi-machine view.
-# Leave "" if you only run one machine. Example: "VMC-01" or "Router-Bay-3".
+# Network interfaces never to broadcast on, comma-separated (e.g. "enp3s0").
+# The Mesa hm2_eth card's interface is detected and skipped automatically.
+exclude_interfaces: ""
+
+# Name shown in the dashboard. Empty = this PC's hostname.
+# Example: "VMC-01" or "Router-Bay-3". Must be unique per machine.
 machine_name: ""
 
 # Seconds between status packets while the machine is active. 1.0 is typical.
@@ -39,7 +48,7 @@ idle_heartbeat_interval_s: 30.0
 # Bytes per chunk when streaming the loaded G-code file (kept under the UDP limit).
 gcode_chunk_size: 50000
 
-# Log file path (only written in dev mode: --dev or CNC_DEV_MODE=1).
+# Log file path (only written in dev mode: lcnc-status-agent --dev).
 log_file: "/tmp/cnc_status.log"
 
 # Rotating log settings (dev mode only).
