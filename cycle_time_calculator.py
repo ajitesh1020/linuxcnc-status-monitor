@@ -7,7 +7,7 @@
 # This file is part of linuxcnc-status-monitor. It is free software under the
 # GNU General Public License v2 or later. See the LICENSE file for details.
 """
-cycle_time_calculator.py  —  v1.2.0
+cycle_time_calculator.py  —  v1.3.0
 =====================================
 Industrial-grade cycle time calculator for LinuxCNC CNC applications.
 
@@ -19,27 +19,25 @@ Tracks:
   - "Run From Here" mid-program start detection and safe handling
   - Thread-safe access to all state via RLock
 
-Program Completion Detection (M2/M30 Line Scan — No G-code Changes)
---------------------------------------------------------------------
-status.py scans the loaded G-code file to find:
-  - first_executable_line : first non-blank, non-comment, non-% line
-  - end_line              : last line containing M2, M30, or a trailing %
+Program Completion Detection (M2/M30 — No G-code Changes)
+----------------------------------------------------------
+program_tracker.py scans the loaded file and watches the executed line
+numbers; when a cycle goes idle having run through to M2/M30, status.py
+calls signal_cycle_complete() and then stop_cycle(). A cycle that stops
+earlier is recorded as an abort.
 
-When motion_line reaches end_line during execution, status.py calls
-signal_cycle_complete() — the definitive signal that the program ran
-to the end normally.
+Part accounting (one physical part = one pass through the program)
+------------------------------------------------------------------
+  * Top → M2/M30 in one go                         → 1 part.
+  * Top → stopped midway → Run From Here → M2/M30  → 1 part (time is carried
+    across the interruption, no second abort for the continuation).
+  * Top → stopped midway → started again from top  → the unfinished part is
+    recorded as a PARTIAL part with how far it got (e.g. 0.5 = half done),
+    and the new run starts a fresh part.
 
-If the program stops before reaching end_line (E-stop, operator cancel,
-feed-hold-then-stop), stop_cycle() is called without a prior
-signal_cycle_complete() and the cycle is recorded as an abort.
-
-No changes to G-code files are required.
-
-Run-From-Here Handling
-----------------------
-If a cycle starts with motion_line > first_executable_line, it is flagged
-as is_run_from_here = True. These cycles are tracked but not counted as
-completed parts.
+Whether a cycle started from the top or mid-program is only known once the
+first move executes, so start_cycle(None) opens the cycle "unclassified" and
+status.py calls classify_start() when it knows.
 
 Design principles:
   - Zero side-effects on LinuxCNC — read-only consumer of state signals
@@ -84,6 +82,11 @@ class CycleSnapshot:
     cycle_complete_signalled: bool         # True if end-line was reached
     is_run_from_here: bool                 # True if cycle started mid-program
     last_aborted_ms: Optional[int] = None  # most recent aborted cycle duration
+    partial_parts: int = 0                 # parts left unfinished (restarted from top)
+    partial_part_equiv: float = 0.0        # sum of their completed fractions
+    last_partial_pct: Optional[float] = None
+    progress_pct: float = 0.0              # how far the current part has got
+    part_in_progress: bool = False         # running, or awaiting Run From Here
 
 
 @dataclass
@@ -96,6 +99,8 @@ class _CycleState:
     paused: bool                     = False
     cycle_complete_signalled: bool   = False   # end-line reached?
     is_run_from_here: bool           = False
+    classified: bool                 = False   # start point (top / mid) known?
+    progress: float                  = 0.0     # 0..1 furthest point this cycle
 
 
 # ---------------------------------------------------------------------------
@@ -132,40 +137,56 @@ class CycleTimeCalculator:
         # Reset to 0 on a fresh start-from-beginning and on a completed part.
         self._carry_ms:            int = 0
 
+        # An unfinished part (fresh run stopped early, or an incomplete Run From
+        # Here) that a later Run From Here may still complete.
+        self._part_open:           bool  = False
+        self._open_progress:       float = 0.0
+        self._partial_parts:       int   = 0
+        self._partial_equiv:       float = 0.0
+        self._last_partial_pct:    Optional[float] = None
+
         self._log(logging.DEBUG,
-                  "CycleTimeCalculator v1.2.0 initialised (dev_mode=%s)", dev_mode)
+                  "CycleTimeCalculator v1.3.0 initialised (dev_mode=%s)", dev_mode)
 
     # ------------------------------------------------------------------
     # Control methods
     # ------------------------------------------------------------------
 
-    def start_cycle(self, run_from_here: bool = False) -> None:
+    def start_cycle(self, run_from_here: Optional[bool] = False) -> None:
         """
         Start a new cycle.
-        run_from_here=True — cycle started mid-program via "Run From Here".
-        These cycles are timed but not counted as completed parts.
+        run_from_here=True  — continued mid-program via "Run From Here".
+        run_from_here=False — started from the top.
+        run_from_here=None  — not known yet; call classify_start() later.
         """
         with self._lock:
             if self._state.running:
                 self._log(logging.WARNING,
                           "start_cycle() called but cycle already running — ignoring.")
                 return
-            if not run_from_here:
-                self._carry_ms = 0  # fresh run from the top starts the clock at 0
             self._state = _CycleState(
                 start_ns=time.perf_counter_ns(),
                 running=True,
                 paused=False,
-                is_run_from_here=run_from_here,
             )
-            if run_from_here:
-                self._run_from_here_count += 1
-                self._log(logging.WARNING,
-                          "Cycle CONTINUED mid-program (Run From Here #%d), "
-                          "carrying %d ms from the interrupted run.",
-                          self._run_from_here_count, self._carry_ms)
+            if run_from_here is None:
+                self._log(logging.INFO, "Cycle STARTED — waiting for the first move "
+                                        "to tell top vs Run From Here.")
             else:
-                self._log(logging.INFO, "Cycle STARTED from beginning.")
+                self._classify_unsafe(run_from_here)
+
+    def classify_start(self, run_from_here: bool) -> None:
+        """Record where the running cycle started. Only the first call counts."""
+        with self._lock:
+            if self._state.running and not self._state.classified:
+                self._classify_unsafe(run_from_here)
+
+    def set_progress(self, fraction: float) -> None:
+        """Furthest point (0..1) the running cycle has reached in the program."""
+        with self._lock:
+            if self._state.running:
+                f = min(1.0, max(0.0, float(fraction)))
+                self._state.progress = max(self._state.progress, f)
 
     def pause_cycle(self) -> None:
         """Pause (feed hold). Ignored if not running or already paused."""
@@ -219,9 +240,9 @@ class CycleTimeCalculator:
 
         Decision tree:
           duration < MIN_VALID_CYCLE_MS     → discard (too short)
-          is_run_from_here                  → run_from_here record only (no part)
-          cycle_complete_signalled          → part counted
-          else                              → abort recorded
+          cycle_complete_signalled          → part counted (incl. carried time)
+          is_run_from_here                  → part still open, time carried
+          else                              → abort recorded, part left open
         """
         with self._lock:
             if not self._state.running:
@@ -230,12 +251,13 @@ class CycleTimeCalculator:
 
             duration_ms = self._elapsed_ms_unsafe()
             complete    = self._state.cycle_complete_signalled
-            rfh         = self._state.is_run_from_here
+            rfh         = self._resolved_rfh_unsafe()
+            progress    = self._progress_unsafe()
 
             self._log(logging.INFO,
                       "Cycle STOP. duration=%d ms  end_line_reached=%s  "
-                      "run_from_here=%s",
-                      duration_ms, complete, rfh)
+                      "run_from_here=%s  progress=%.0f%%",
+                      duration_ms, complete, rfh, progress * 100)
 
             if duration_ms < MIN_VALID_CYCLE_MS and self._carry_ms == 0:
                 self._log(logging.WARNING,
@@ -247,7 +269,7 @@ class CycleTimeCalculator:
                 # via Run From Here. Total time includes any carried segments.
                 self._completed_durations_ms.append(duration_ms)
                 self._parts_produced += 1
-                self._carry_ms = 0
+                self._close_part_unsafe()
                 self._log(logging.INFO,
                           "Part COUNTED (#%d). Cycle time: %d ms%s.",
                           self._parts_produced, duration_ms,
@@ -256,10 +278,11 @@ class CycleTimeCalculator:
             elif rfh:
                 # A continuation that itself did not finish — keep the accumulated
                 # time so a further Run From Here continues, without an abort.
-                self._carry_ms = duration_ms
+                self._leave_part_open_unsafe(duration_ms, progress)
                 self._log(logging.WARNING,
-                          "Run-From-Here segment stopped at %d ms — carried for "
-                          "continuation (no abort).", duration_ms)
+                          "Run-From-Here segment stopped at %d ms (%.0f%% done) — "
+                          "carried for continuation (no abort).",
+                          duration_ms, progress * 100)
 
             else:
                 # Fresh run stopped before M2/M30 — abort. Carry the elapsed time so
@@ -267,31 +290,33 @@ class CycleTimeCalculator:
                 self._abort_count += 1
                 if duration_ms >= MIN_VALID_CYCLE_MS:
                     self._aborted_durations_ms.append(duration_ms)
-                self._carry_ms = duration_ms
+                self._leave_part_open_unsafe(duration_ms, progress)
                 self._log(logging.WARNING,
                           "End line NOT reached — ABORT recorded (#%d). "
-                          "Duration: %d ms (carried for Run From Here).",
-                          self._abort_count, duration_ms)
+                          "Duration: %d ms, %.0f%% done (carried for Run From Here).",
+                          self._abort_count, duration_ms, progress * 100)
 
             self._state = _CycleState()   # reset for next cycle
 
     def abort_cycle(self) -> None:
         """
-        Explicit abort — called on E-stop or process shutdown while running.
-        Always recorded as abort regardless of end-line state.
+        Explicit abort — called on E-stop, machine off, stop-while-paused, or
+        process shutdown while running. Always recorded as abort; the part is
+        left open so Run From Here can still finish it.
         """
         with self._lock:
             if not self._state.running:
                 self._log(logging.DEBUG, "abort_cycle() — no cycle running, skip.")
                 return
             duration_ms = self._elapsed_ms_unsafe()
+            progress    = self._progress_unsafe()
             self._abort_count += 1
             if duration_ms >= MIN_VALID_CYCLE_MS:
                 self._aborted_durations_ms.append(duration_ms)
-            self._carry_ms = duration_ms  # resumable via Run From Here
+            self._leave_part_open_unsafe(duration_ms, progress)
             self._log(logging.WARNING,
-                      "Cycle ABORTED (explicit) at %d ms. Total aborts: %d.",
-                      duration_ms, self._abort_count)
+                      "Cycle ABORTED (explicit) at %d ms, %.0f%% done. Total aborts: %d.",
+                      duration_ms, progress * 100, self._abort_count)
             self._state = _CycleState()
 
     # ------------------------------------------------------------------
@@ -322,6 +347,13 @@ class CycleTimeCalculator:
                 cycle_complete_signalled=self._state.cycle_complete_signalled,
                 is_run_from_here=self._state.is_run_from_here,
                 last_aborted_ms=last_abort,
+                partial_parts=self._partial_parts,
+                partial_part_equiv=round(self._partial_equiv, 2),
+                last_partial_pct=self._last_partial_pct,
+                progress_pct=round(100 * (
+                    self._progress_unsafe() if self._state.running
+                    else self._open_progress if self._part_open else 0.0), 1),
+                part_in_progress=self._state.running or self._part_open,
             )
 
     def get_completed_durations(self) -> List[int]:
@@ -347,11 +379,66 @@ class CycleTimeCalculator:
             self._abort_count         = 0
             self._run_from_here_count = 0
             self._carry_ms            = 0
+            self._part_open           = False
+            self._open_progress       = 0.0
+            self._partial_parts       = 0
+            self._partial_equiv       = 0.0
+            self._last_partial_pct    = None
             self._log(logging.INFO, "All stats RESET by operator.")
 
     # ------------------------------------------------------------------
     # Private
     # ------------------------------------------------------------------
+
+    def _classify_unsafe(self, run_from_here: bool) -> None:
+        self._state.classified       = True
+        self._state.is_run_from_here = run_from_here
+        if run_from_here:
+            self._run_from_here_count += 1
+            self._log(logging.WARNING,
+                      "Cycle CONTINUED mid-program (Run From Here #%d), carrying %d ms "
+                      "(part %.0f%% done before).",
+                      self._run_from_here_count, self._carry_ms,
+                      self._open_progress * 100 if self._part_open else 0.0)
+        else:
+            if self._part_open:
+                self._finalize_partial_unsafe()
+            self._carry_ms = 0  # fresh run from the top starts the clock at 0
+            self._log(logging.INFO, "Cycle STARTED from beginning.")
+
+    def _resolved_rfh_unsafe(self) -> bool:
+        """Start point of the running cycle. One that ends before any move was
+        seen counts as a continuation of an open part, else as a fresh run."""
+        if self._state.classified:
+            return self._state.is_run_from_here
+        return self._part_open
+
+    def _progress_unsafe(self) -> float:
+        p = self._state.progress
+        if self._part_open and self._resolved_rfh_unsafe():
+            p = max(p, self._open_progress)
+        return p
+
+    def _leave_part_open_unsafe(self, duration_ms: int, progress: float) -> None:
+        self._carry_ms      = duration_ms
+        self._part_open     = True
+        self._open_progress = progress
+
+    def _close_part_unsafe(self) -> None:
+        self._carry_ms      = 0
+        self._part_open     = False
+        self._open_progress = 0.0
+
+    def _finalize_partial_unsafe(self) -> None:
+        """The open part was abandoned — program restarted from the top."""
+        frac = self._open_progress
+        self._partial_parts   += 1
+        self._partial_equiv   += frac
+        self._last_partial_pct = round(frac * 100, 1)
+        self._log(logging.WARNING,
+                  "Previous part abandoned at %.0f%% — recorded as partial part #%d.",
+                  frac * 100, self._partial_parts)
+        self._close_part_unsafe()
 
     def _elapsed_ms_unsafe(self) -> int:
         """Active elapsed ms. MUST be called while holding self._lock."""

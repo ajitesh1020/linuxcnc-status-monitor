@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Parts were never counted on a full program run.** The end check compared
+  `motion_line` with the last `M2`/`M30`/`%` line, but `M2`/`M30` are not moves
+  (so `motion_line` never gets there) and the trailing `%` never executes. The new
+  `program_tracker.py` finds the last *move* before M2/M30 and counts a part when
+  the cycle goes idle after that move (or once `current_line` is seen on M2/M30).
+- **Full runs were flagged "Run From Here".** At cycle start `motion_line` still
+  holds the previous run's last line, and with 1 s polling the program is already
+  past `first_exec_line + 2`. The start point is now the first *new* move line,
+  with a tolerance scaled to the program length.
+- E-stop / machine-off mid-cycle is always an abort, even near the end.
+
+### Added
+
+- **Partial parts.** A part interrupted and then *restarted from the top* (instead
+  of continued with Run From Here) is recorded as a partial part with how far it
+  got: `partial_parts`, `partial_part_equiv` (e.g. `0.5` for half done),
+  `last_partial_pct`. Also `program_progress_pct`, `part_in_progress`,
+  `gcode_tail_line`, and per-joint `hard_limit`.
+- `sample_interval_s` (default 0.1 s): LinuxCNC status is now read at 10 Hz for
+  cycle tracking; packets are still sent every `poll_interval_s`, plus
+  immediately on a cycle-state change.
+- The program is rescanned when the loaded file is edited and reloaded under the
+  same name (path + mtime + size).
+
 ### Changed
 
 - **Run From Here now continues the cycle timer** instead of restarting it. When a
