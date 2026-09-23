@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.5.0]
+
+### Added
+
+- **History journal on the machine PC** (`~/linuxcnc-monitor-agent/journal.db`,
+  14 days by default): a compact copy of status whenever something that matters
+  changes, else every 10 s while active. A dashboard that was closed, or whose
+  PC was off or offline, fetches exactly what it missed over UDP
+  (`journal_port`, default 5006, read-only). Status packets now carry
+  `agent_id`, `journal_seq`, `journal_port`. See PROTOCOL.md §5a.
+- Config: `journal_days`, `journal_interval_s`, `journal_port`.
+
+### Fixed
+
+- Error messages caught while the machine was idle were dropped with the
+  suppressed idle packet; a packet carrying an error is now always sent.
+
 ## [1.4.0]
 
 ### Added
