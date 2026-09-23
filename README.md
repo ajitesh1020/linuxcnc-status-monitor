@@ -1,24 +1,26 @@
 # LinuxCNC Status Monitor
 
-An industrial-grade, real-time status monitor for [LinuxCNC](https://linuxcnc.org/) machines.  
-Streams machine state, axis positions, spindle data, cycle times, and production counts over UDP — with **zero changes required to your G-code files** and zero risk to the running CNC process.
+A real-time, read-only status monitor for [LinuxCNC](https://linuxcnc.org/) machines.
+Streams machine state, axis positions, spindle, cycle times, part counts and
+errors over UDP — with **zero changes to your G-code** and zero risk to the
+running CNC process.
 
-**Version: 1.3.0**
+**Version: 1.4.0**
 
 ---
 
 ## This is the free agent. Want the dashboard?
 
 This repository is the **free, open-source agent** that runs on your CNC machine
-and broadcasts its status. It's the safe, read-only half of a two-part system:
+and streams its status. It's the safe, read-only half of a two-part system:
 
 - **Agent (this repo, free & GPL)** — runs on the LinuxCNC machine, read-only,
   streams status over UDP. Use it standalone with the included
   [`examples/udp_receiver.py`](examples/udp_receiver.py).
 - **LinuxCNC Status Dashboard (paid)** — a desktop app for your office PC that
   turns this stream into a **live multi-machine grid, historical logging, OEE
-  (Availability × Performance × Quality), and email/Telegram alerts**. No Python
-  needed on the monitoring PC; ships as a Windows `.exe` / Linux AppImage.
+  (Availability × Performance × Quality), reports, and email/Telegram alerts**.
+  No Python needed on the monitoring PC.
 
   A **free tier** monitors a single machine (live view). Paid tiers add history,
   OEE, alerts, and multiple machines.
@@ -30,310 +32,138 @@ it works with the dashboard or your own receiver.
 
 ---
 
-## Features
+## Install (Debian / LinuxCNC 2.9 ISO)
 
-- **Zero G-code changes** — program completion detected by scanning for `M2`/`M30` line numbers; no custom M-codes needed
-- **Real-time status broadcast** — polls LinuxCNC every second; JSON over UDP
-- **Idle suppression** — no packets while machine is idle; one heartbeat every 30 s
-- **Run From Here detection** — mid-program starts flagged automatically; not counted as parts
-- **G-code file streaming** — full program sent once on load; re-sent only when file changes
-- **Cycle time tracking** — millisecond-precision, pause-aware
-- **Production counting** — completed parts, aborts, and Run-From-Here counts tracked separately
-- **NML error capture** — LinuxCNC error messages shipped in every packet
-- **Auto-shutdown** — `status.py` closes cleanly when LinuxCNC exits
-- **Dev mode** — verbose DEBUG logging via `--dev` or `CNC_DEV_MODE=1`
-- **Fault-tolerant** — all LinuxCNC calls guarded; this process can never crash LinuxCNC
+1. Download `linuxcnc-status-agent_<version>_all.deb` from the
+   [latest release](https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/latest).
+2. Install it:
+
+   ```bash
+   sudo apt install ./linuxcnc-status-agent_*_all.deb
+   ```
+
+That's it. Start LinuxCNC **any way you like** — desktop icon, terminal,
+the configuration picker — and the agent attaches automatically.
+
+- It runs as a per-user background service (`lcnc-status-agent`) that starts at
+  login, **waits for LinuxCNC**, connects when LinuxCNC starts and lets go when
+  it exits.
+- Nothing inside LinuxCNC is modified, so **LinuxCNC updates can't remove it**.
+- Upgrading: install the newer `.deb` the same way; your settings are kept.
+- Removing: `sudo apt remove linuxcnc-status-agent`.
+
+### Settings
+
+`~/linuxcnc-monitor-agent/config.yaml` — created the first time the agent runs.
+Out of the box it needs **no editing**: it broadcasts on the local network and
+names the machine after the PC's hostname. Typical edit:
+
+```yaml
+machine_name: "VMC-01"      # how the machine appears in the dashboard
+```
+
+Apply changes with `systemctl --user restart lcnc-status-agent`.
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for every key.
+
+### Useful commands
+
+```bash
+lcnc-status-agent --check                 # config file, name, where packets go, LinuxCNC up?
+systemctl --user status lcnc-status-agent # is the service running?
+
+# Watch it live (verbose):
+systemctl --user stop lcnc-status-agent
+lcnc-status-agent --dev
+systemctl --user start lcnc-status-agent
+```
+
+### Running from a git checkout (developers)
+
+```bash
+git clone https://github.com/ajitesh1020/linuxcnc-status-monitor.git
+cd linuxcnc-status-monitor
+python3 status.py --dev          # while LinuxCNC is running (or started later)
+```
+
+Build the `.deb` yourself with `bash packaging/deb/build.sh` (output in `dist/`).
 
 ---
 
-## Repository Structure
+## Networking — no static IP needed
+
+By default the agent **broadcasts** its packets on every LAN / Wi-Fi interface.
+Any dashboard on the same network receives them, whatever IP it currently has,
+so nothing needs to change when the office PC's address changes.
+
+- The Mesa `hm2_eth` card's interface is detected and **never** broadcast on.
+- A fixed IP or a host name can still be used (`monitor_pc_ip`).
+- Details, Wi-Fi notes and when a static IP makes sense:
+  [`docs/NETWORK.md`](docs/NETWORK.md).
+
+---
+
+## Features
+
+- **Zero G-code changes** — program completion detected from the `M2`/`M30`
+  program end; no custom M-codes
+- **Accurate part counting** — a run to `M2`/`M30` counts as a part; an
+  interrupted part finished with *Run From Here* still counts once; a part
+  abandoned by restarting from the top is recorded as a **partial part**
+- **Real-time stream** — LinuxCNC read at 10 Hz, one JSON packet per second
+- **Idle suppression** — one heartbeat every 30 s while idle
+- **G-code file streaming** — full program sent once on load, again on change
+- **Cycle time tracking** — millisecond precision, pause-aware
+- **Errors** — E-stop, execution errors, joint faults, hard limits, and any NML
+  messages the agent catches
+- **Fault-tolerant** — every LinuxCNC call guarded; the agent can never crash LinuxCNC
+
+---
+
+## How parts are counted
+
+The agent scans the loaded file for the first move, the **last move before
+`M2`/`M30`**, and the `M2`/`M30` line itself, then watches the executed line
+numbers.
+
+| What happens on the machine | Result |
+|---|---|
+| Top → `M2`/`M30` | 1 part |
+| Top → stopped midway → Run From Here → `M2`/`M30` | 1 part (time carried over), 1 abort |
+| Top → stopped midway → started again from top | partial part with % done (e.g. 0.5), then a new part |
+| E-stop / machine off during a run | abort |
+
+See [`program_tracker.py`](program_tracker.py) for the exact rules.
+
+---
+
+## Repository structure
 
 ```
 linuxcnc-status-monitor/
-├── status.py                  # Main application (the agent)
-├── cycle_time_calculator.py   # Cycle timing and production counting
-├── config.example.yaml        # Config template — copy to config.yaml
-├── PROTOCOL.md                # Normative UDP wire-protocol spec (agent ↔ dashboard)
-├── scripts/
-│   ├── launch_ofc.sh          # Launcher: starts LinuxCNC + status.py together
-│   └── OFC_PC.desktop         # Desktop shortcut
-├── docs/
-│   ├── UDP_PAYLOAD.md         # Human-friendly JSON payload reference
-│   ├── CONFIGURATION.md       # config.yaml key reference
-│   └── TROUBLESHOOTING.md     # Common errors and fixes
-├── examples/
-│   └── udp_receiver.py        # Receive and display packets on monitoring PC
-├── CHANGELOG.md
-└── README.md
+├── status.py                  # The agent (main loop, state machine, packets)
+├── program_tracker.py         # M2/M30 + Run From Here detection from line numbers
+├── cycle_time_calculator.py   # Cycle timing, parts / aborts / partial parts
+├── agent_net.py               # Where packets go (broadcast / IP / host name)
+├── agent_runtime.py           # LinuxCNC process watch, config location, lock
+├── config.example.yaml        # Settings template
+├── PROTOCOL.md                # Normative UDP wire protocol (agent ↔ dashboard)
+├── packaging/                 # .deb build script, user service, wrapper
+├── docs/                      # CONFIGURATION, NETWORK, TROUBLESHOOTING
+├── examples/udp_receiver.py   # Minimal receiver for testing on any PC
+└── tests/                     # python3 -m unittest discover -s tests
 ```
 
 ---
 
-## Requirements
-
-| Item | Detail |
-|---|---|
-| OS | Linux (Ubuntu 20.04 / 22.04) |
-| LinuxCNC | 2.8 or later |
-| Python | 3.8 or later (ships with LinuxCNC) |
-| Network | Static IP on monitoring PC (see below) |
-
-No external Python packages required.
-
----
-
-## Step 1 — Set a Static IP on the Monitoring PC
-
-The monitoring PC **must** have a static IP so the CNC machine always knows where to send data.
-
-### Find your network interface name
+## Receiving data without the dashboard
 
 ```bash
-ip a
+python3 examples/udp_receiver.py            # compact live summary
+python3 examples/udp_receiver.py --pretty   # full JSON + rotating log
 ```
 
-Look for the interface connected to your CNC network — typically `eth0`, `enp2s0`, or similar.
-
-### Configure the static IP
-
-```bash
-sudo geany /etc/network/interfaces
-```
-
-Append at the end of the file (replace `enp2s0` with your actual interface name):
-
-```
-auto enp2s0
-iface enp2s0 inet static
-    address 193.168.0.3
-    netmask 255.255.255.0
-    gateway 193.168.0.1
-```
-
-### Apply and verify
-
-```bash
-# Restart networking
-sudo systemctl restart networking
-
-# Confirm IP is assigned
-ip a show enp2s0
-
-# Ping the CNC machine (Mesa card) to confirm routing
-ping 10.10.10.1
-```
-
----
-
-## Step 2 — Configure with `config.yaml`
-
-No code editing. Copy the template and edit the values:
-
-```bash
-cp config.example.yaml config.yaml
-```
-
-```yaml
-monitor_pc_ip: "193.168.0.3"   # your monitoring PC static IP
-monitor_pc_port: 5005          # UDP port
-machine_name: "VMC-01"         # shown in the dashboard's multi-machine view
-poll_interval_s: 1.0
-idle_heartbeat_interval_s: 30.0
-```
-
-`status.py` loads `config.yaml` from its own directory automatically, or point at
-another path with `python3 status.py --config /path/to/config.yaml`. If the file
-is missing, built-in defaults are used. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
-for all keys.
-
----
-
-## Step 3 — Install
-
-```bash
-git clone https://github.com/your-org/linuxcnc-status-monitor.git
-cd linuxcnc-status-monitor
-
-INSTALL_DIR="/home/user_name/linuxcnc/configs/OFC_PC/indus-ai"
-mkdir -p "$INSTALL_DIR"
-cp status.py cycle_time_calculator.py "$INSTALL_DIR/"
-cp scripts/launch_ofc.sh "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/launch_ofc.sh"
-
-# Create the config from the template, then edit it (see Step 2)
-cp config.example.yaml "$INSTALL_DIR/config.yaml"
-```
-
-Update paths inside `scripts/launch_ofc.sh` and `scripts/OFC_PC.desktop`, then copy the launcher:
-
-```bash
-cp scripts/OFC_PC.desktop ~/Desktop/
-chmod +x ~/Desktop/OFC_PC.desktop
-```
-
----
-
-## Step 4 — Launch
-
-Double-click `OFC_PC.desktop`. LinuxCNC and `status.py` start together.  
-When LinuxCNC closes, `status.py` shuts down automatically.
-
----
-
-## How Program Completion Is Detected
-
-`status.py` scans the loaded G-code file and finds:
-
-| Detected value | What it is |
-|---|---|
-| `gcode_first_exec_line` | First non-blank, non-comment line in the file |
-| `gcode_end_line` | **Last** line containing `M2`, `M30`, or a trailing `%` |
-
-During execution, when `motion_line >= gcode_end_line`, the cycle is marked **complete** and counts as a part.
-
-If the program stops before reaching `gcode_end_line` (E-stop, operator cancel), it is recorded as an **abort**.
-
-**No M-codes, no shell scripts, no G-code changes required.**
-
----
-
-## Run From Here
-
-When an operator uses LinuxCNC's "Run From Here" feature:
-- `status.py` detects `motion_line > gcode_first_exec_line` at cycle start
-- The cycle is flagged `is_run_from_here: true`
-- The cycle is **not** counted as a completed part (partial run)
-- It is counted in `run_from_here_count` for visibility
-
----
-
-## Running Manually
-
-```bash
-# Production (silent; logs to /tmp/cnc_status.log)
-python3 status.py
-
-# Development (verbose DEBUG to console + file)
-python3 status.py --dev
-```
-
----
-
-## Dev Mode
-
-| Method | Command |
-|---|---|
-| CLI flag | `python3 status.py --dev` |
-| Env var (one-time) | `CNC_DEV_MODE=1 python3 status.py` |
-| Env var (via launcher) | `CNC_DEV_MODE=1 bash launch_ofc.sh` |
-| Env var (session) | `export CNC_DEV_MODE=1` |
-
-Verify env var:
-```bash
-printenv CNC_DEV_MODE   # prints 1 if set
-```
-
-In dev mode, watch the end-line detection:
-```
-End-line scan: file=part_A.ngc  first_exec=3  end_line=47
-```
-
-And cycle classification:
-```
-Program END LINE reached — cycle complete at 95230 ms.
-Part COUNTED (#7). Cycle time: 95230 ms.
-```
-
----
-
-## Idle Suppression
-
-| Event | Behaviour |
-|---|---|
-| Machine transitions to IDLE | One packet sent immediately |
-| Machine stays IDLE | Silent for 30 s |
-| 30 s heartbeat | One keep-alive packet |
-| Machine becomes active | Full stream resumes |
-
-Configurable: `IDLE_HEARTBEAT_INTERVAL_S = 30.0` in `status.py`.
-
----
-
-## Receiving Data on the Monitoring PC
-
-```bash
-# Compact live summary
-python3 examples/udp_receiver.py
-
-# Full pretty JSON + rotating log file
-python3 examples/udp_receiver.py --pretty
-
-# Custom log path
-python3 examples/udp_receiver.py --pretty --log /var/log/cnc_packets.log
-
-# Save received G-code files to disk
-python3 examples/udp_receiver.py --save-gcode ./received/
-
-# Show specific fields only
-python3 examples/udp_receiver.py --fields cycle_state parts_produced gcode_end_line
-
-# Open firewall on monitoring PC
-sudo ufw allow 5005/udp
-```
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐      UDP / JSON
-│               CNC Machine                       │ ────────────────► Monitoring PC
-│                                                  │     port 5005
-│  ┌──────────┐    ┌────────────────────────────┐  │
-│  │ LinuxCNC │    │        status.py            │  │
-│  │  NML     │◄───│  ┌──────────────────────┐   │  │
-│  │  stat    │    │  │  CycleStateMachine    │   │  │
-│  │  channel │    │  ├──────────────────────┤   │  │
-│  │  error   │    │  │  GcodeEndDetector     │   │  │
-│  │  channel │    │  │  (scans M2/M30 line)  │   │  │
-│  └──────────┘    │  ├──────────────────────┤   │  │
-│                  │  │  CycleTimeCalculator  │   │  │
-│                  │  ├──────────────────────┤   │  │
-│                  │  │  GcodeFileSender      │   │  │
-│                  │  └──────────────────────┘   │  │
-│                  └────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-```
-
----
-
-## Cycle State Machine
-
-```
-         ┌──────────────┐
-         │     IDLE     │◄────────────────────────────┐
-         └──────┬───────┘                             │
-                │ AUTO+RUNNING detected                │
-                │ motion_line > first_exec+2           │
-                │ → run_from_here = True               │
-                ▼                                     │
-         ┌──────────────┐  feed hold  ┌───────────────┴──┐
-         │   RUNNING    │────────────►│     PAUSED        │
-         │              │◄────────────│                   │
-         └──────┬───────┘  resume     └───────────┬───────┘
-                │                                 │
-   motion_line  │                       abort while│ paused
-   >= end_line  │  → signal_cycle_complete()       │ → abort_cycle()
-   IDLE         │  → stop_cycle()                  │
-                │                                 │
-    ┌───────────┴──────────────────────────┐      │
-    │ end line reached?  → Part counted    │      │
-    │ end line missed?   → Abort recorded  │      │
-    │ run_from_here?     → RFH recorded    │      │
-    └──────────────────────────────────────┘      │
-         ▲                                        │
-         └────────────────────────────────────────┘
-```
+This is also the quickest way to check the network: if it shows packets, the
+dashboard will too.
 
 ---
 
@@ -343,12 +173,10 @@ See [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 | Symptom | Likely cause |
 |---|---|
-| `[FATAL] Could not import 'linuxcnc'` | Not inside LinuxCNC environment |
-| No packets on monitoring PC | Wrong IP/port, firewall blocking UDP 5005 |
-| All cycles recorded as aborts | No M2/M30 found in G-code file — check with `--dev` |
-| `gcode_end_line: -1` in packet | File has no M2/M30/% — add one |
-| `run_from_here_count` increasing | Operator using "Run From Here" |
-| `status.py` outlives LinuxCNC | Using old desktop file — use `launch_ofc.sh` |
+| Nothing arrives at the dashboard | Windows firewall / network set to *Public*, or Wi-Fi "client isolation" — see NETWORK.md |
+| `lcnc-status-agent is already running` | The service is running; stop it before a manual `--dev` run |
+| Parts not counted | No `M2`/`M30` in the file — check `lcnc-status-agent --dev` output |
+| Machine shows twice in the dashboard | An old launcher also starts `status.py` — remove it |
 
 ---
 
@@ -356,7 +184,7 @@ See [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 1. Fork the repo
 2. Branch: `git checkout -b feature/your-feature`
-3. Follow PEP 8 strictly
+3. Follow PEP 8; run `python3 -m unittest discover -s tests`
 4. Test on real LinuxCNC or sim: `linuxcnc -l`
 5. Submit a pull request
 

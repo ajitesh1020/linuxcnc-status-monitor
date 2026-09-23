@@ -1,0 +1,63 @@
+name: Debian package
+
+# PRs / manual runs: test + build the .deb as a downloadable artifact.
+# Tag vX.Y.Z:        same, then publish it on the GitHub Release for that tag.
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Tag matches AGENT_VERSION
+        if: github.ref_type == 'tag'
+        run: |
+          src=$(sed -n 's/^AGENT_VERSION: str = "\(.*\)"/\1/p' status.py)
+          [ "v$src" = "$GITHUB_REF_NAME" ] || {
+            echo "::error::tag $GITHUB_REF_NAME but status.py AGENT_VERSION is $src"; exit 1; }
+
+      - name: Build
+        run: bash packaging/deb/build.sh
+
+      - name: Inspect
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+
+      - name: Install / remove smoke test
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          test -x /usr/bin/lcnc-status-agent
+          test -f /usr/lib/systemd/user/lcnc-status-agent.service
+          systemctl --global is-enabled lcnc-status-agent.service
+          python3 -m py_compile /usr/share/linuxcnc-status-agent/*.py
+          sudo apt-get remove -y linuxcnc-status-agent
+          ! systemctl --global is-enabled lcnc-status-agent.service
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linuxcnc-status-agent-deb
+          path: dist/*.deb
+
+      - name: Publish to GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.deb --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.deb \
+              --title "linuxcnc-status-agent $GITHUB_REF_NAME" --generate-notes
+          fi

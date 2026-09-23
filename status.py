@@ -10,7 +10,7 @@
 """
 status.py  —  v1.4.0
 =====================
-Industrial-grade LinuxCNC status monitor for OFC_PC.
+LinuxCNC status monitor agent — streams machine state to the dashboard.
 
 Responsibilities
 ----------------
@@ -81,6 +81,13 @@ beyond the first few moves of the program is a Run From Here.
   * top → stop → Run From Here → M2/M30  : 1 part, time carried over
   * top → stop → top again                : partial part (with % done)
 
+Running & networking
+--------------------
+Installed from the .deb, the agent is a per-user systemd service started at
+login; it waits for LinuxCNC's task server and attaches however LinuxCNC is
+launched (agent_runtime.py). Packets are broadcast on the LAN by default so no
+static IP is needed on either PC (agent_net.py).
+
 Idle Suppression
 ----------------
   - One packet on IDLE transition edge
@@ -116,8 +123,12 @@ except ImportError:
     )
     sys.exit(1)
 
+from agent_net import UdpSender
+from agent_runtime import LinuxCNCWatch, find_config, single_instance
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 from program_tracker import CycleLineTracker, ProgramScanner
+
+AGENT_VERSION: str = "1.4.0"
 
 # ---------------------------------------------------------------------------
 # Protocol
@@ -131,9 +142,10 @@ PROTOCOL_VERSION: int = 1   # wire-format version — see PROTOCOL.md
 # are the built-in fallbacks used when a key is missing or no config file is
 # found, so the agent always starts even with zero configuration.
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "monitor_pc_ip":             "193.168.0.3",   # monitoring PC static IP
+    "monitor_pc_ip":             "auto",          # "auto" = LAN broadcast, or IP / host list
     "monitor_pc_port":           5005,            # UDP port on the monitoring PC
-    "machine_name":              "",              # identifies this machine to the dashboard
+    "exclude_interfaces":        "",              # never broadcast on these (comma list)
+    "machine_name":              "",              # "" = this PC's hostname
     "poll_interval_s":           1.0,             # seconds between active status packets
     "sample_interval_s":         0.1,             # seconds between stat reads (cycle tracking)
     "idle_heartbeat_interval_s": 30.0,            # keep-alive interval while idle
@@ -143,10 +155,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_backup_count":          3,
 }
 
-# Searched when --config is not given: config.yaml next to this script.
-DEFAULT_CONFIG_PATH: str = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "config.yaml"
-)
+# Config file location: see agent_runtime.find_config() —
+# ~/linuxcnc-monitor-agent/config.yaml is created on first run.
 
 
 def _coerce(value: Any, template: Any) -> Any:
@@ -209,13 +219,13 @@ def load_config(path: Optional[str]) -> Dict[str, Any]:
     always start.
     """
     cfg: Dict[str, Any] = dict(DEFAULT_CONFIG)
-    cfg_path = path or DEFAULT_CONFIG_PATH
+    cfg_path = path
 
-    if not os.path.isfile(cfg_path):
-        if path:  # user explicitly pointed at a file that isn't there
+    if not cfg_path or not os.path.isfile(cfg_path):
+        if cfg_path:  # pointed at a file that isn't there
             logger.warning("Config file not found: %s — using defaults.", cfg_path)
         else:
-            logger.info("No config.yaml at %s — using built-in defaults.", cfg_path)
+            logger.info("No config.yaml found — using built-in defaults.")
         return cfg
 
     try:
@@ -402,6 +412,12 @@ class _CycleStateMachine:
         self._tracker  = CycleLineTracker()
         self._state    = self.IDLE
         # Line numbers last seen while idle — stale values to ignore at start.
+        self._idle_motion_line  = 0
+        self._idle_current_line = 0
+
+    def reset(self) -> None:
+        """LinuxCNC went away — start over from IDLE."""
+        self._state             = self.IDLE
         self._idle_motion_line  = 0
         self._idle_current_line = 0
 
@@ -618,7 +634,11 @@ class _GcodeFileSender:
         self._machine_name:     str   = machine_name
         self._sent_fingerprint: Tuple = ("", 0, 0)
 
-    def check_and_send(self, stat: linuxcnc.stat, sender: "_UdpSender") -> None:
+    def reset(self) -> None:
+        """Forget what was sent so the file is re-sent after a LinuxCNC restart."""
+        self._sent_fingerprint = ("", 0, 0)
+
+    def check_and_send(self, stat: linuxcnc.stat, sender: UdpSender) -> None:
         meta      = _collect_file_meta(stat)
         fp        = (meta["file_name"], meta["file_size"], meta["file_modified_ms"])
         file_path = _safe_get(stat, "file", "") or ""
@@ -657,60 +677,20 @@ class _GcodeFileSender:
 
 
 # ---------------------------------------------------------------------------
-# UDP sender
-# ---------------------------------------------------------------------------
-class _UdpSender:
-    def __init__(self, ip: str, port: int) -> None:
-        self._ip   = ip
-        self._port = port
-        self._sock: Optional[socket.socket] = None
-        self._create_socket()
-
-    def _create_socket(self) -> None:
-        try:
-            if self._sock:
-                self._sock.close()
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
-        except OSError as exc:
-            logger.error("Failed to create UDP socket: %s", exc)
-            self._sock = None
-
-    def send(self, payload: bytes) -> bool:
-        if self._sock is None:
-            self._create_socket()
-        if self._sock is None:
-            return False
-        try:
-            self._sock.sendto(payload, (self._ip, self._port))
-            return True
-        except OSError as exc:
-            logger.warning("UDP send failed: %s", exc)
-            self._create_socket()
-            return False
-
-    def close(self) -> None:
-        if self._sock:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
-
-
-# ---------------------------------------------------------------------------
 # Argument parsing / dev mode
 # ---------------------------------------------------------------------------
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="CNC Status Monitor — broadcasts LinuxCNC state via UDP.",
+        prog="lcnc-status-agent",
+        description="LinuxCNC Status Monitor agent — streams machine state via UDP.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "DEV MODE can also be enabled without --dev by setting:\n"
-            "  CNC_DEV_MODE=1\n\n"
-            "Examples:\n"
-            "  python3 status.py --dev\n"
-            "  CNC_DEV_MODE=1 bash launch_ofc.sh"
+            "Installed from the .deb it runs automatically as a user service and\n"
+            "attaches whenever LinuxCNC is running. To watch it live:\n"
+            "  systemctl --user stop lcnc-status-agent\n"
+            "  lcnc-status-agent --dev\n"
+            "  systemctl --user start lcnc-status-agent\n\n"
+            "DEV MODE can also be enabled with CNC_DEV_MODE=1."
         ),
     )
     parser.add_argument(
@@ -719,9 +699,30 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config", metavar="PATH", default=None,
-        help="Path to config.yaml (default: config.yaml next to this script).",
+        help="Path to config.yaml (default: ~/linuxcnc-monitor-agent/config.yaml, "
+             "created on first run).",
     )
+    parser.add_argument(
+        "--check", action="store_true", default=False,
+        help="Print config file, machine name, send targets and LinuxCNC state, then exit.",
+    )
+    parser.add_argument("--version", action="version",
+                        version=f"lcnc-status-agent {AGENT_VERSION} (protocol {PROTOCOL_VERSION})")
     return parser.parse_args()
+
+
+def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) -> None:
+    sender = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
+                       cfg["exclude_interfaces"])
+    running = LinuxCNCWatch().alive()
+    print(f"lcnc-status-agent {AGENT_VERSION}")
+    print(f"  config file   : {cfg_path or '(none — built-in defaults)'}")
+    print(f"  machine name  : {machine_name}")
+    print(f"  monitor_pc_ip : {cfg['monitor_pc_ip']}")
+    print(f"  sending to    : {', '.join(sender.targets) or '(nothing!)'} "
+          f"port {cfg['monitor_pc_port']}")
+    print(f"  LinuxCNC      : {'running' if running else 'not running'}")
+    sender.close()
 
 
 def _resolve_dev_mode(args: argparse.Namespace) -> bool:
@@ -742,16 +743,33 @@ def main() -> None:
         src = "--dev flag" if args.dev else "CNC_DEV_MODE env var"
         print(f"[DEV MODE ACTIVE — enabled via {src}]", flush=True)
 
-    cfg = load_config(args.config)
+    cfg_path = find_config(args.config)
+    cfg = load_config(cfg_path)
     _configure_logging(dev_mode, cfg)
 
     poll_interval_s           = cfg["poll_interval_s"]
     idle_heartbeat_interval_s = cfg["idle_heartbeat_interval_s"]
-    machine_name              = cfg["machine_name"]
+    # Unnamed machines use the hostname so the dashboard keeps recognising the
+    # machine even when its IP address changes.
+    machine_name              = cfg["machine_name"].strip() or socket.gethostname()
+
+    if args.check:
+        _run_check(cfg_path, cfg, machine_name)
+        return
+
+    # One agent per user: a second copy would double-count parts.
+    lock = single_instance()
+    if lock is None:
+        print("lcnc-status-agent is already running (the background service).\n"
+              "To run it by hand:  systemctl --user stop lcnc-status-agent",
+              file=sys.stderr)
+        sys.exit(3)
 
     logger.info(
-        "CNC Status Monitor v1.4.0 starting. dev_mode=%s machine=%r target=%s:%d",
-        dev_mode, machine_name, cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
+        "CNC Status Monitor v%s starting. dev_mode=%s machine=%r config=%s "
+        "monitor=%s port=%d",
+        AGENT_VERSION, dev_mode, machine_name, cfg_path or "(defaults)",
+        cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
     )
 
     signal.signal(signal.SIGTERM, _handle_signal)
@@ -764,11 +782,14 @@ def main() -> None:
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     scanner       = ProgramScanner()
     state_machine = _CycleStateMachine(calculator, scanner)
-    sender        = _UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"])
+    sender        = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
+                              cfg["exclude_interfaces"])
     gcode_sender  = _GcodeFileSender(cfg["gcode_chunk_size"], machine_name)
+    watch         = LinuxCNCWatch()
 
     stat_channel:  Optional[linuxcnc.stat]          = None
     error_channel: Optional[linuxcnc.error_channel] = None
+    linuxcnc_up:   bool                             = False
 
     def _connect_linuxcnc() -> bool:
         nonlocal stat_channel, error_channel
@@ -778,10 +799,21 @@ def main() -> None:
             logger.info("Connected to LinuxCNC channels.")
             return True
         except Exception as exc:
-            logger.error("Cannot connect to LinuxCNC: %s. Retrying in 5 s.", exc)
+            logger.warning("Cannot connect to LinuxCNC yet: %s. Retrying.", exc)
             stat_channel  = None
             error_channel = None
             return False
+
+    def _disconnect_linuxcnc() -> None:
+        # Drop the NML channels so their shared memory is released while
+        # LinuxCNC is down (it re-creates it on the next start).
+        nonlocal stat_channel, error_channel
+        stat_channel  = None
+        error_channel = None
+        if calculator.snapshot().is_running:
+            calculator.abort_cycle()
+        state_machine.reset()
+        gcode_sender.reset()
 
     last_poll_time:          float = 0.0
     last_sample_time:        float = 0.0
@@ -805,9 +837,26 @@ def main() -> None:
             continue
         last_sample_time = now
 
+        # ------------------------------------------------------------------
+        # Only talk to LinuxCNC while it is actually running. The service
+        # starts at login and waits here, however LinuxCNC gets launched.
+        # ------------------------------------------------------------------
+        if not watch.alive():
+            if linuxcnc_up:
+                logger.info("LinuxCNC stopped — waiting for it to start again.")
+                linuxcnc_up = False
+                _disconnect_linuxcnc()
+            time.sleep(1.0)
+            continue
+        if not linuxcnc_up:
+            linuxcnc_up = True
+            logger.info("LinuxCNC detected — connecting.")
+            time.sleep(2.0)   # give the task server time to publish its buffers
+            continue
+
         if stat_channel is None:
             if not _connect_linuxcnc():
-                time.sleep(5.0)
+                time.sleep(2.0)
                 continue
 
         # ------------------------------------------------------------------

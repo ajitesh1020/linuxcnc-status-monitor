@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        echo "Per-user settings are kept in ~/linuxcnc-monitor-agent/ — delete that folder to remove them."
+        ;;
+esac
+
+exit 0

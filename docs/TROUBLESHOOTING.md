@@ -1,192 +1,100 @@
-# Troubleshooting  —  v1.2.0
+# Troubleshooting  —  v1.4.0
+
+Start here — it answers most questions in one go:
+
+```bash
+lcnc-status-agent --check
+```
+
+```
+lcnc-status-agent 1.4.0
+  config file   : /home/indus/linuxcnc-monitor-agent/config.yaml
+  machine name  : CNC-01
+  monitor_pc_ip : auto
+  sending to    : 192.168.0.255 port 5005
+  LinuxCNC      : running
+```
+
+---
+
+## Nothing arrives at the dashboard
+
+1. `lcnc-status-agent --check` — is "sending to" a broadcast address on the
+   same network as the office PC (e.g. `192.168.0.255` when the office PC is
+   `192.168.0.x`)?
+2. Is the service running? `systemctl --user status lcnc-status-agent`
+3. Windows firewall / network profile on the office PC — see
+   [NETWORK.md](NETWORK.md#windows-firewall-dashboard-pc).
+4. Wi-Fi with client isolation — see [NETWORK.md](NETWORK.md#wi-fi-notes).
+5. Watch the agent live:
+
+   ```bash
+   systemctl --user stop lcnc-status-agent
+   lcnc-status-agent --dev          # look for "Packet SENT"
+   systemctl --user start lcnc-status-agent
+   ```
+
+---
+
+## `lcnc-status-agent is already running`
+
+The background service is already running (only one agent per user so parts
+are never double-counted). Stop it first for a manual run — see above.
+
+---
+
+## The machine appears twice / counts jump around
+
+Two agents are sending under the same name — usually an **old launcher**
+(`launch_ofc.sh`, `OFC_PC.desktop`, or an autostart entry running `status.py`).
+The `.deb` installer lists any it finds. Delete them and start LinuxCNC
+normally; the service handles the agent.
+
+```bash
+pgrep -af status.py      # should show only /usr/share/linuxcnc-status-agent/status.py
+```
 
 ---
 
 ## `[FATAL] Could not import 'linuxcnc'`
 
-`status.py` must run on the CNC machine, not the monitoring PC.
+The agent must run on the LinuxCNC PC.
 
 ```bash
 python3 -c "import linuxcnc; print('OK')"
 ```
 
+For LinuxCNC built from source, see "run-in-place" in
+[CONFIGURATION.md](CONFIGURATION.md).
+
 ---
 
-## No packets on monitoring PC
+## Parts are not counted
+
+Run `lcnc-status-agent --dev` and look for the program scan when the file loads:
+
+```
+Program scan: file=part_A.ngc first_exec=2 first_move=6 tail_move=2692 end=2693
+```
+
+- `end=-1` → the file has no `M2` / `M30`. Add one as the last command.
+- At cycle end you should see `Part COUNTED (#n)`. If you see
+  `End line NOT reached — ABORT recorded` instead, the program stopped before
+  its last move (Stop, E-stop, error).
+- Very short test programs (< 1 s) are ignored (`MIN_VALID_CYCLE_MS`).
+
+## Partial parts
+
+A part stopped midway and then **restarted from the top** (instead of being
+finished with Run From Here) is recorded as a partial part with how far it
+got. That's intended — finish it with Run From Here to count it as a part.
+
+---
+
+## Log files (dev mode only)
 
 ```bash
-# 1. Confirm status.py is sending
-python3 status.py --dev
-# Look for: "Packet SENT (XXXX bytes)"
-
-# 2. Confirm IP and port match in status.py
-#    MONITOR_PC_IP  = "193.168.0.3"
-#    MONITOR_PC_PORT = 5005
-
-# 3. Open firewall on monitoring PC
-sudo ufw allow 5005/udp
-
-# 4. Test receive with netcat
-nc -u -l 5005
-
-# 5. Ping monitoring PC from CNC machine
-ping 193.168.0.3
-```
-
----
-
-## Monitoring PC has no static IP
-
-Packets arrive at the right place only if the monitoring PC always has the same IP.  
-Follow the static IP setup in the README:
-
-```bash
-# Check current IP
-ip a show enp2s0
-
-# If wrong, edit and restart
-sudo geany /etc/network/interfaces
-sudo systemctl restart networking
-```
-
----
-
-## All cycles recorded as aborts
-
-**Most common cause:** `gcode_end_line` is `-1` — no M2/M30/% found in the file.
-
-```bash
-# Check in dev mode
-python3 status.py --dev 2>&1 | grep "end_line"
-```
-
-Expected output:
-```
-End-line scan: file=part_A.ngc  first_exec=3  end_line=47
-```
-
-If you see `end_line=-1`:
-```
-WARNING: No M2/M30/% found in 'part_A.ngc' — all cycles will be aborts.
-```
-
-**Fix:** make sure your G-code file ends with `M2` or `M30`.  
-Every standard G-code program should have one — if yours doesn't, add it:
-
-```gcode
-; last line of your program:
-M2
-```
-
-Also verify the packet field:
-```bash
-python3 examples/udp_receiver.py --fields gcode_end_line gcode_first_exec_line
-```
-
----
-
-## Parts not counting even though M2/M30 is present
-
-**Possible cause 1 — motion_line never reaches end_line**
-
-LinuxCNC's `motion_line` is the line being executed by the *motion controller*, which can lag behind the *interpreter* (`current_line`). If the program is very short, the motion controller may not reach the last line before LinuxCNC transitions to IDLE.
-
-Check in dev mode:
-```
-Cycle STOP. duration=XXXX ms  end_line_reached=False  run_from_here=False
-```
-
-**Fix:** add a small `G4 P0.1` dwell just before `M2` to give the motion controller time to catch up:
-```gcode
-G4 P0.1   (short dwell — allows motion_line to reach M2)
-M2
-```
-
-**Possible cause 2 — Run From Here flag set**
-
-Check `is_run_from_here` in the received packet. If `true`, the cycle started mid-program.
-
-**Possible cause 3 — cycle too short**
-
-Minimum valid cycle is 1 second (`MIN_VALID_CYCLE_MS`). If your program runs faster, lower this constant in `cycle_time_calculator.py`.
-
----
-
-## `run_from_here_count` keeps increasing
-
-The operator is using LinuxCNC's "Run From Here" feature. These cycles are tracked but not counted as parts.
-
-To count a run-from-here cycle as a part, the operator must restart from line 1.
-
----
-
-## Machine is idle but packets keep arriving
-
-Idle suppression is active by default. If packets still arrive rapidly:
-
-1. Check `IDLE_HEARTBEAT_INTERVAL_S` in `status.py` (default 30 s)
-2. Verify `cycle_state` is actually `"IDLE"` in received packets — if `"RUNNING"` then the machine isn't idle
-3. Run `--dev` and look for: `"IDLE — packet suppressed."`
-
----
-
-## G-code file not being received on monitoring PC
-
-```bash
-# On monitoring PC — watch for gcode_file packets
-python3 examples/udp_receiver.py --save-gcode ./received/
-```
-
-The file is only sent when it changes. To force a resend:
-- Load a different file in LinuxCNC then reload the original, OR
-- Restart `status.py`
-
----
-
-## `status.py` outlives LinuxCNC
-
-Make sure `OFC_PC.desktop` uses `launch_ofc.sh`:
-```ini
-Exec=bash /home/indus/.../launch_ofc.sh
-```
-
-Verify the launcher log:
-```bash
-cat /tmp/cnc_status_launcher.log
-# Should show: "LinuxCNC exited — stopping status.py"
-```
-
-Manual cleanup:
-```bash
-pkill -f status.py
-```
-
----
-
-## Log files
-
-```bash
-# CNC machine — follow live log
 tail -f /tmp/cnc_status.log
-
-# Monitoring PC — follow pretty log
-tail -f /tmp/udp_receiver_pretty.log
-
-# Clear logs
-> /tmp/cnc_status.log
-> /tmp/udp_receiver_pretty.log
 ```
 
----
-
-## Checking dev mode env var
-
-```bash
-printenv CNC_DEV_MODE        # prints 1 if set
-export CNC_DEV_MODE=1        # set for this session
-unset CNC_DEV_MODE           # remove
-
-# Make permanent
-echo 'export CNC_DEV_MODE=1' >> ~/.bashrc
-source ~/.bashrc
-```
+Production runs are silent by design.

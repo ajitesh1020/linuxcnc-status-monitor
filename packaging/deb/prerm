@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+#COMMON#
+
+case "$1" in
+    remove|deconfigure)
+        for_each_user stop "$UNIT"
+        systemctl --global disable "$UNIT" >/dev/null 2>&1 || true
+        ;;
+    upgrade)
+        # postinst of the new version restarts it.
+        ;;
+esac
+
+exit 0

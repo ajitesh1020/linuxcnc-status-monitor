@@ -1,0 +1,4 @@
+#!/bin/sh
+# lcnc-status-agent — LinuxCNC Status Monitor agent (installed by the .deb).
+# Normally started by the per-user service: systemctl --user status lcnc-status-agent
+exec /usr/bin/python3 /usr/share/linuxcnc-status-agent/status.py "$@"
