@@ -1,0 +1,16 @@
+[Unit]
+Description=LinuxCNC Status Monitor agent (streams machine status to the dashboard)
+Documentation=https://github.com/ajitesh1020/linuxcnc-status-monitor
+
+[Service]
+Type=simple
+# Waits for LinuxCNC and attaches however it is launched (icon, terminal,
+# configuration picker); lets go when LinuxCNC exits. Read-only.
+ExecStart=/usr/bin/lcnc-status-agent
+Restart=always
+RestartSec=10
+# Lower priority than anything LinuxCNC runs in user space.
+Nice=10
+
+[Install]
+WantedBy=default.target

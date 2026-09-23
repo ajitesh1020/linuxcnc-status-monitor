@@ -1,0 +1,18 @@
+Package: linuxcnc-status-agent
+Version: @VERSION@
+Section: misc
+Priority: optional
+Architecture: all
+Depends: python3 (>= 3.7), iproute2, systemd
+Recommends: python3-yaml
+Suggests: linuxcnc-uspace
+Maintainer: Ajitesh Kannojia <aji.ajitesh1020@gmail.com>
+Homepage: https://github.com/ajitesh1020/linuxcnc-status-monitor
+Installed-Size: @SIZE@
+Description: LinuxCNC status monitor agent
+ Streams live LinuxCNC machine state (cycle, parts, axes, spindle, errors)
+ over UDP to a monitoring dashboard on the local network.
+ .
+ Runs automatically as a per-user service and attaches whenever LinuxCNC is
+ running, however it is launched. Broadcasts on the LAN by default, so no
+ static IP is needed. Read-only: it never commands the machine.

@@ -6,6 +6,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.4.0]
+
+### Added
+
+- **Debian package** `linuxcnc-status-agent_<ver>_all.deb`, built by GitHub
+  Actions and attached to each `v*` release. `sudo apt install ./….deb`.
+- **Runs automatically with LinuxCNC, however it is launched** (desktop icon,
+  terminal, configuration picker): installed as a per-user systemd service that
+  waits for LinuxCNC's task server, attaches when it starts and lets go when it
+  exits. LinuxCNC's own files are not modified, so LinuxCNC updates can't
+  remove it. Single-instance lock prevents double counting.
+- **No static IP needed**: `monitor_pc_ip: "auto"` (new default) broadcasts on
+  every LAN / Wi-Fi interface, re-checked every 30 s; the Mesa `hm2_eth`
+  interface is detected and skipped. IPs and host names (re-resolved) still
+  work, also as a comma-separated list. `exclude_interfaces` key.
+- `machine_name` defaults to the PC's hostname.
+- Settings in `~/linuxcnc-monitor-agent/config.yaml`, created on first run and
+  never overwritten by upgrades.
+- `lcnc-status-agent --check` and `--version`.
+- `docs/NETWORK.md` (broadcast, Wi-Fi, static IP and Mesa NIC guidance).
+
+### Removed
+
+- `scripts/launch_ofc.sh` and `scripts/OFC_PC.desktop` (replaced by the service).
+- `docs/UDP_PAYLOAD.md` (superseded by `PROTOCOL.md`).
+
 ### Fixed
 
 - **Parts were never counted on a full program run.** The end check compared

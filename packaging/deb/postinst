@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+#COMMON#
+
+case "$1" in
+    configure)
+        # Start with every user session from now on …
+        systemctl --global enable "$UNIT" >/dev/null 2>&1 || true
+        # … and right away for anyone already logged in (also picks up upgrades).
+        for_each_user daemon-reload
+        for_each_user restart "$UNIT"
+
+        # Old hand-made launchers would start a second, older agent.
+        old=$(grep -lsE 'launch_ofc\.sh|status\.py' \
+                /home/*/Desktop/*.desktop /home/*/.config/autostart/*.desktop \
+                /home/*/.local/share/applications/*.desktop 2>/dev/null || true)
+        if [ -n "$old" ]; then
+            echo ""
+            echo "WARNING: these launchers still start the old status.py by hand."
+            echo "Remove them (or point them at plain 'linuxcnc') so only one agent runs:"
+            echo "$old" | sed 's/^/    /'
+        fi
+
+        cat <<'EOF'
+
+linuxcnc-status-agent is installed and runs automatically whenever LinuxCNC
+runs — start LinuxCNC any way you like.
+
+  Settings : ~/linuxcnc-monitor-agent/config.yaml   (created on first run)
+  Check    : lcnc-status-agent --check
+  Service  : systemctl --user status lcnc-status-agent
+
+By default status is broadcast on the local network: the dashboard receives it
+without any IP settings on either PC.
+
+EOF
+        ;;
+esac
+
+exit 0

@@ -10,9 +10,6 @@ This is the **normative contract** between the two halves of the system:
 Neither program imports the other. They stay in sync only by both obeying this
 document. Any change to the wire format is a change to this file first.
 
-> This file supersedes `docs/UDP_PAYLOAD.md` as the authoritative spec.
-> `docs/UDP_PAYLOAD.md` remains as a human-friendly field reference.
-
 ---
 
 ## 1. Transport
@@ -22,6 +19,7 @@ document. Any change to the wire format is a change to this file first.
 | Transport | UDP (unreliable, connectionless, fire-and-forget) |
 | Direction | Agent → monitoring PC (one-way; the agent never listens) |
 | Default port | `5005` (configurable via `config.yaml`) |
+| Addressing | Default: **LAN broadcast** — the directed broadcast of each LAN interface, never the Mesa `hm2_eth` link. Optionally unicast to IPs / host names. Receivers bind `0.0.0.0:<port>` and must tolerate the same packet arriving twice (two interfaces on one network) |
 | Encoding | UTF-8 |
 | Framing | One JSON object per UDP datagram |
 | Max datagram | Keep JSON < 65,000 bytes; large G-code is chunked (see §5) |
@@ -48,7 +46,7 @@ Rules:
 4. A packet with no `proto` field predates version 1 and should be treated as
    legacy/unknown.
 
-`proto` is separate from the application version (`status.py` v1.3.0). App
+`proto` is separate from the application version (agent 1.4.0). App
 versions can change freely without touching the protocol.
 
 ---
@@ -60,7 +58,7 @@ versions can change freely without touching the protocol.
 | `type` | string | `"status"` or `"gcode_file"` |
 | `proto` | integer | Protocol version (currently `1`) |
 | `ts` | integer | Unix epoch timestamp in **milliseconds** |
-| `machine_name` | string | Operator-assigned machine identifier from `config.yaml`. May be `""` if unset. Used by the dashboard to distinguish machines in a multi-machine view |
+| `machine_name` | string | Machine identifier from `config.yaml`; since agent 1.4.0 it defaults to the PC's hostname (older agents may send `""`). Used by the dashboard to tell machines apart — not the sender IP, which can change |
 
 ---
 
@@ -274,3 +272,4 @@ VPN or equivalent.
 | 1 | 2026-09 | Initial formal spec. Adds `proto` and `machine_name` to all packets (additive over the pre-spec v1.2.0 payload). |
 | 1 | 2026-09 | Additive: per-axis `work` position; `wcs`, `g92_offset`, `tool_offset` in machine state; `last_abort_ms`. No version bump (additive). |
 | 1 | 2026-09 | Additive: `partial_parts`, `partial_part_equiv`, `last_partial_pct`, `program_progress_pct`, `part_in_progress`, `gcode_tail_line`, per-joint `hard_limit`. `gcode_end_line` now points at M2/M30 rather than a trailing `%`. No version bump. |
+| 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
