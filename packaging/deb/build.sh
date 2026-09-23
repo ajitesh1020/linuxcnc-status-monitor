@@ -25,7 +25,7 @@ install -d "$STAGE/DEBIAN" "$STAGE/usr/bin" "$SHARE" "$DOC" "$STAGE/usr/lib/syst
 
 # Program
 for f in status.py cycle_time_calculator.py program_tracker.py agent_net.py \
-         agent_runtime.py config.example.yaml; do
+         agent_runtime.py agent_journal.py config.example.yaml; do
     install -m 0644 "$ROOT/$f" "$SHARE/$f"
 done
 install -m 0755 "$ROOT/packaging/lcnc-status-agent" "$STAGE/usr/bin/lcnc-status-agent"

@@ -8,7 +8,7 @@
 # GNU General Public License v2 or later. See the LICENSE file for details.
 # It links the GPL-licensed LinuxCNC Python module and is therefore GPL.
 """
-status.py  —  v1.4.0
+status.py  —  v1.5.0
 =====================
 LinuxCNC status monitor agent — streams machine state to the dashboard.
 
@@ -123,12 +123,13 @@ except ImportError:
     )
     sys.exit(1)
 
+from agent_journal import Journal, JournalServer
 from agent_net import UdpSender
-from agent_runtime import LinuxCNCWatch, find_config, single_instance
+from agent_runtime import USER_CONFIG_DIR, LinuxCNCWatch, find_config, single_instance
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 from program_tracker import CycleLineTracker, ProgramScanner
 
-AGENT_VERSION: str = "1.4.0"
+AGENT_VERSION: str = "1.5.0"
 
 # ---------------------------------------------------------------------------
 # Protocol
@@ -153,6 +154,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_file":                  "/tmp/cnc_status.log",
     "log_max_bytes":             5 * 1024 * 1024,
     "log_backup_count":          3,
+    "journal_days":              14.0,            # history kept on this PC for the dashboard
+    "journal_interval_s":        10.0,            # journal at least this often while active
+    "journal_port":              5006,            # UDP port the dashboard fetches history from (0 = off)
 }
 
 # Config file location: see agent_runtime.find_config() —
@@ -787,6 +791,14 @@ def main() -> None:
     gcode_sender  = _GcodeFileSender(cfg["gcode_chunk_size"], machine_name)
     watch         = LinuxCNCWatch()
 
+    # History kept on this PC so a dashboard that was closed / off can fetch
+    # what it missed (agent_journal.py).
+    journal       = Journal(os.path.join(USER_CONFIG_DIR, "journal.db"),
+                            cfg["journal_interval_s"], cfg["journal_days"])
+    journal_srv   = JournalServer(journal.path, cfg["journal_port"], machine_name,
+                                  journal.agent_id)
+    journal_port  = cfg["journal_port"] if journal.enabled and journal_srv.start() else 0
+
     stat_channel:  Optional[linuxcnc.stat]          = None
     error_channel: Optional[linuxcnc.error_channel] = None
     linuxcnc_up:   bool                             = False
@@ -933,9 +945,10 @@ def main() -> None:
             if state_changed:
                 idle_packet_sent    = False
                 last_idle_heartbeat = now
-            if idle_packet_sent and (now - last_idle_heartbeat) < idle_heartbeat_interval_s:
+            # Never suppress a packet that carries a caught error message.
+            if (idle_packet_sent and not pending_nml_errors
+                    and (now - last_idle_heartbeat) < idle_heartbeat_interval_s):
                 prev_cycle_state = current_cycle_state
-                pending_nml_errors.clear()
                 logger.debug("IDLE — packet suppressed.")
                 continue
         else:
@@ -1004,6 +1017,15 @@ def main() -> None:
             continue
 
         # ------------------------------------------------------------------
+        # Journal it, and tell the dashboard how far the journal goes
+        # ------------------------------------------------------------------
+        journal.record(payload, now)
+        if journal.enabled:
+            payload["agent_id"]     = journal.agent_id
+            payload["journal_seq"]  = journal.last_seq
+            payload["journal_port"] = journal_port
+
+        # ------------------------------------------------------------------
         # Serialise and send
         # ------------------------------------------------------------------
         try:
@@ -1035,6 +1057,8 @@ def main() -> None:
     if snap.is_running:
         logger.warning("Shutdown with active cycle — recording as abort.")
         calculator.abort_cycle()
+    journal_srv.stop()
+    journal.close()
     sender.close()
     logger.info("CNC Status Monitor stopped cleanly.")
 
