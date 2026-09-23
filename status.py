@@ -8,17 +8,19 @@
 # GNU General Public License v2 or later. See the LICENSE file for details.
 # It links the GPL-licensed LinuxCNC Python module and is therefore GPL.
 """
-status.py  —  v1.3.0
+status.py  —  v1.4.0
 =====================
 Industrial-grade LinuxCNC status monitor for OFC_PC.
 
 Responsibilities
 ----------------
-  1. Poll LinuxCNC status channel every second (non-blocking).
+  1. Sample the LinuxCNC status channel every sample_interval_s (0.1 s) for
+     cycle tracking; send a status packet every poll_interval_s (1 s).
   2. Drive cycle state machine: IDLE → RUNNING → PAUSED → IDLE/ABORTED.
-  3. Auto-detect program completion by scanning the loaded G-code file for
-     M2 / M30 / trailing-% lines — NO changes to G-code files required.
-  4. Detect "Run From Here" mid-program starts via motion_line comparison.
+  3. Auto-detect program completion (M2 / M30) from the loaded G-code file
+     and the executed line numbers — NO changes to G-code files required.
+  4. Detect "Run From Here" starts, carry an interrupted part across them,
+     and record abandoned parts as partial parts (see program_tracker.py).
   5. Suppress UDP packets while idle; send one heartbeat every 30 s.
   6. Stream the full G-code file once on load; re-send on file change.
   7. Passively poll the NML error channel — AXIS always wins the queue race
@@ -64,16 +66,20 @@ Logging (v1.3.0)
 
 Program End Detection (No G-code changes required)
 ---------------------------------------------------
-_GcodeEndDetector scans the loaded .ngc file on every file change:
-  first_exec_line — first non-blank, non-comment, non-%, non-O-word line
-  end_line        — LAST line containing M2, M30, or a standalone %
-
-When motion_line >= end_line → signal_cycle_complete() → part counted.
-If program stops before end_line → abort recorded.
+program_tracker.ProgramScanner scans the loaded .ngc file (rescanned when
+the path, mtime or size changes) for the first move, the last move before
+the program end (tail), and the M2/M30 line. A cycle that goes idle with the
+machine still ON and its last executed move on the tail line (or with
+current_line seen on the M2/M30 line) is a finished part; otherwise an abort.
+E-stop / machine-off mid-cycle is always an abort.
 
 Run-From-Here Detection
 -----------------------
-If motion_line > first_exec_line + 2 at cycle start → run_from_here flag.
+motion_line is stale at cycle start (it still shows the previous run's last
+line), so the start point is taken from the first NEW move line. A start
+beyond the first few moves of the program is a Run From Here.
+  * top → stop → Run From Here → M2/M30  : 1 part, time carried over
+  * top → stop → top again                : partial part (with % done)
 
 Idle Suppression
 ----------------
@@ -94,7 +100,6 @@ import json
 import logging
 import logging.handlers
 import os
-import re
 import signal
 import socket
 import sys
@@ -112,6 +117,7 @@ except ImportError:
     sys.exit(1)
 
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
+from program_tracker import CycleLineTracker, ProgramScanner
 
 # ---------------------------------------------------------------------------
 # Protocol
@@ -129,6 +135,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "monitor_pc_port":           5005,            # UDP port on the monitoring PC
     "machine_name":              "",              # identifies this machine to the dashboard
     "poll_interval_s":           1.0,             # seconds between active status packets
+    "sample_interval_s":         0.1,             # seconds between stat reads (cycle tracking)
     "idle_heartbeat_interval_s": 30.0,            # keep-alive interval while idle
     "gcode_chunk_size":          50_000,          # bytes per G-code file chunk
     "log_file":                  "/tmp/cnc_status.log",
@@ -252,10 +259,6 @@ MODE_MANUAL: int = 1
 MODE_AUTO:   int = 2
 MODE_MDI:    int = 3
 
-# G-code end-line patterns
-_GCODE_END_RE  = re.compile(r"^(m0*2\b|m0*30\b|%\s*$)", re.IGNORECASE)
-_GCODE_SKIP_RE = re.compile(r"^(\s*$|;|%|\(|o\s*\d)", re.IGNORECASE)
-
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
@@ -375,81 +378,15 @@ def _drain_nml_errors(error_channel: linuxcnc.error_channel) -> List[Dict]:
 
 
 # ---------------------------------------------------------------------------
-# G-code end-line detector
-# ---------------------------------------------------------------------------
-class _GcodeEndDetector:
-    """
-    Scans the loaded G-code file to find:
-      first_exec_line — first non-blank, non-comment, non-%, non-O-word line
-      end_line        — LAST line matching M2 / M30 / standalone %
-
-    No changes to G-code files are required.
-    """
-
-    def __init__(self) -> None:
-        self._file_path:          str  = ""
-        self.first_exec_line:     int  = 1
-        self.end_line:            int  = -1
-        self._complete_signalled: bool = False
-
-    def load(self, file_path: str) -> None:
-        if file_path == self._file_path:
-            return
-        self._file_path          = file_path
-        self.first_exec_line     = 1
-        self.end_line            = -1
-        self._complete_signalled = False
-
-        if not file_path:
-            return
-        try:
-            first_found = False
-            last_end    = -1
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                for lineno, raw in enumerate(f, start=1):
-                    stripped  = raw.strip()
-                    if not first_found and not _GCODE_SKIP_RE.match(stripped):
-                        self.first_exec_line = lineno
-                        first_found = True
-                    code_part = re.sub(r"\(.*?\)", "", stripped).strip()
-                    if _GCODE_END_RE.match(code_part):
-                        last_end = lineno
-            self.end_line = last_end
-            logger.debug(
-                "End-line scan: file=%s  first_exec=%d  end_line=%d",
-                os.path.basename(file_path), self.first_exec_line, self.end_line,
-            )
-            if self.end_line == -1:
-                logger.warning(
-                    "No M2/M30/%% in '%s' — all cycles will be aborts.",
-                    os.path.basename(file_path),
-                )
-        except OSError as exc:
-            logger.error("Cannot read G-code file '%s': %s", file_path, exc)
-
-    def reset_cycle(self) -> None:
-        self._complete_signalled = False
-
-    def check_motion_line(
-        self, motion_line: int, calculator: CycleTimeCalculator
-    ) -> None:
-        if (
-            not self._complete_signalled
-            and self.end_line != -1
-            and motion_line >= self.end_line
-        ):
-            self._complete_signalled = True
-            calculator.signal_cycle_complete()
-
-    def is_run_from_here(self, motion_line: int) -> bool:
-        return motion_line > (self.first_exec_line + 2)
-
-
-# ---------------------------------------------------------------------------
 # Cycle state machine
 # ---------------------------------------------------------------------------
 class _CycleStateMachine:
-    """Edge-triggered: calls calculator methods exactly ONCE per transition."""
+    """Edge-triggered: calls calculator methods exactly ONCE per transition.
+
+    Run at the fast sample rate (sample_interval_s) so short moves and the
+    final move before M2/M30 are not missed. Line tracking is delegated to
+    program_tracker.CycleLineTracker (see that module for the rules).
+    """
 
     IDLE    = "IDLE"
     RUNNING = "RUNNING"
@@ -458,40 +395,70 @@ class _CycleStateMachine:
     def __init__(
         self,
         calculator: CycleTimeCalculator,
-        detector: _GcodeEndDetector,
+        scanner: ProgramScanner,
     ) -> None:
         self._calc     = calculator
-        self._detector = detector
+        self._scanner  = scanner
+        self._tracker  = CycleLineTracker()
         self._state    = self.IDLE
+        # Line numbers last seen while idle — stale values to ignore at start.
+        self._idle_motion_line  = 0
+        self._idle_current_line = 0
+
+    def _track(self, motion_line: int, current_line: int) -> None:
+        prog = self._scanner.info
+        self._tracker.sample(motion_line, current_line, prog)
+        rfh = self._tracker.is_run_from_here(prog)
+        if rfh is not None:
+            self._calc.classify_start(rfh)   # no-op after the first call
+            self._calc.set_progress(self._tracker.progress(prog))
 
     def update(self, stat: linuxcnc.stat) -> str:
-        is_running  = _is_program_running(stat)
-        is_paused   = _is_program_paused(stat)
-        is_idle     = not is_running and not is_paused
-        motion_line = _safe_get(stat, "motion_line", 0)
+        is_running   = _is_program_running(stat)
+        is_paused    = _is_program_paused(stat)
+        is_idle      = not is_running and not is_paused
+        motion_line  = int(_safe_get(stat, "motion_line", 0) or 0)
+        current_line = int(_safe_get(stat, "current_line", 0) or 0)
 
         if self._state == self.IDLE:
             if is_running:
-                rfh = self._detector.is_run_from_here(motion_line)
-                self._detector.reset_cycle()
-                self._calc.start_cycle(run_from_here=rfh)
+                self._tracker.begin(self._idle_motion_line, self._idle_current_line)
+                self._calc.start_cycle(run_from_here=None)
+                self._track(motion_line, current_line)
                 self._state = self.RUNNING
+            else:
+                self._idle_motion_line  = motion_line
+                self._idle_current_line = current_line
 
         elif self._state == self.RUNNING:
-            self._detector.check_motion_line(motion_line, self._calc)
+            self._track(motion_line, current_line)
             if is_paused:
                 self._calc.pause_cycle()
                 self._state = self.PAUSED
             elif is_idle:
-                self._calc.stop_cycle()
+                machine_ok = (stat.task_state == STATE_ON
+                              and not _safe_get(stat, "estop", False))
+                if not machine_ok:
+                    # E-stop / machine off mid-cycle — never a finished part.
+                    self._calc.abort_cycle()
+                else:
+                    if self._tracker.reached_end(self._scanner.info):
+                        self._calc.signal_cycle_complete()
+                    self._calc.stop_cycle()
+                self._idle_motion_line  = motion_line
+                self._idle_current_line = current_line
                 self._state = self.IDLE
 
         elif self._state == self.PAUSED:
+            self._track(motion_line, current_line)
             if is_running:
                 self._calc.resume_cycle()
                 self._state = self.RUNNING
             elif is_idle:
+                # Stopped while in feed hold — the program did not finish.
                 self._calc.abort_cycle()
+                self._idle_motion_line  = motion_line
+                self._idle_current_line = current_line
                 self._state = self.IDLE
 
         return self._state
@@ -563,6 +530,8 @@ def _collect_joint_data(stat: linuxcnc.stat) -> List[Dict[str, Any]]:
                 "homed":  bool(j.get("homed",           False)),
                 "fault":  bool(j.get("fault",           False)),
                 "ferror": round(j.get("ferror_current", 0.0), 6),
+                "hard_limit": bool(j.get("min_hard_limit", False)
+                                   or j.get("max_hard_limit", False)),
             })
     return joints
 
@@ -781,16 +750,20 @@ def main() -> None:
     machine_name              = cfg["machine_name"]
 
     logger.info(
-        "CNC Status Monitor v1.3.0 starting. dev_mode=%s machine=%r target=%s:%d",
+        "CNC Status Monitor v1.4.0 starting. dev_mode=%s machine=%r target=%s:%d",
         dev_mode, machine_name, cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
     )
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
 
+    # Stat is sampled fast for cycle tracking; packets still go out at poll_interval_s.
+    sample_interval_s         = min(max(float(cfg["sample_interval_s"]), 0.02),
+                                    poll_interval_s)
+
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
-    detector      = _GcodeEndDetector()
-    state_machine = _CycleStateMachine(calculator, detector)
+    scanner       = ProgramScanner()
+    state_machine = _CycleStateMachine(calculator, scanner)
     sender        = _UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"])
     gcode_sender  = _GcodeFileSender(cfg["gcode_chunk_size"], machine_name)
 
@@ -811,6 +784,8 @@ def main() -> None:
             return False
 
     last_poll_time:          float = 0.0
+    last_sample_time:        float = 0.0
+    last_sampled_state:      str   = ""
     last_idle_heartbeat:     float = 0.0
     pending_nml_errors:      list  = []
     consecutive_poll_errors: int   = 0
@@ -825,10 +800,10 @@ def main() -> None:
     while not _shutdown_requested:
         now = time.monotonic()
 
-        if now - last_poll_time < poll_interval_s:
-            time.sleep(0.05)
+        if now - last_sample_time < sample_interval_s:
+            time.sleep(0.01)
             continue
-        last_poll_time = now
+        last_sample_time = now
 
         if stat_channel is None:
             if not _connect_linuxcnc():
@@ -854,22 +829,32 @@ def main() -> None:
             continue
 
         # ------------------------------------------------------------------
-        # Load G-code file into end-line detector (no-op if unchanged)
+        # Scan the loaded G-code file (no-op unless path/mtime/size changed)
         # ------------------------------------------------------------------
         try:
             file_path = _safe_get(stat_channel, "file", "") or ""
-            detector.load(file_path)
+            scanner.load(file_path)
         except Exception as exc:
-            logger.debug("Detector load error: %s", exc)
+            logger.debug("Program scan error: %s", exc)
 
         # ------------------------------------------------------------------
-        # Drive cycle state machine
+        # Drive cycle state machine (every sample)
         # ------------------------------------------------------------------
         try:
             current_cycle_state = state_machine.update(stat_channel)
         except Exception as exc:
             logger.error("State machine error: %s", exc)
             current_cycle_state = "UNKNOWN"
+
+        # ------------------------------------------------------------------
+        # Everything below runs at the packet cadence, or at once on a
+        # cycle-state change so transitions reach the dashboard promptly.
+        # ------------------------------------------------------------------
+        sampled_change     = current_cycle_state != last_sampled_state
+        last_sampled_state = current_cycle_state
+        if not sampled_change and now - last_poll_time < poll_interval_s:
+            continue
+        last_poll_time = now
 
         # ------------------------------------------------------------------
         # Passively drain NML errors — AXIS keeps priority on the queue.
@@ -933,10 +918,16 @@ def main() -> None:
                 "total_completed_cycles":   snap.total_completed_cycles,
                 "cycle_complete_signalled": snap.cycle_complete_signalled,
                 "is_run_from_here":         snap.is_run_from_here,
+                "partial_parts":            snap.partial_parts,
+                "partial_part_equiv":       snap.partial_part_equiv,
+                "last_partial_pct":         snap.last_partial_pct,
+                "program_progress_pct":     snap.progress_pct,
+                "part_in_progress":         snap.part_in_progress,
 
                 # End-line info
-                "gcode_end_line":           detector.end_line,
-                "gcode_first_exec_line":    detector.first_exec_line,
+                "gcode_end_line":           scanner.info.end_line,
+                "gcode_first_exec_line":    scanner.info.first_exec_line,
+                "gcode_tail_line":          scanner.info.tail_line,
 
                 # Machine
                 **_collect_machine_status(stat_channel),

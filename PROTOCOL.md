@@ -75,17 +75,23 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 |---|---|---|---|
 | `cycle_state` | string | — | `"IDLE"`, `"RUNNING"`, or `"PAUSED"` |
 | `cycle_time_ms` | integer | ms | Active elapsed time of current cycle, pause-excluded. `0` when IDLE |
-| `parts_produced` | integer | count | Parts completed this session (reached M2/M30; excludes run-from-here) |
-| `abort_count` | integer | count | Cycles that ended before reaching M2/M30 |
+| `parts_produced` | integer | count | Parts completed this session — a run that reached M2/M30, either in one go or finished by Run From Here after an interruption |
+| `abort_count` | integer | count | Cycles started from the top that ended before M2/M30 (a Run From Here continuation that stops again is not a new abort) |
 | `run_from_here_count` | integer | count | Cycles started mid-program via "Run From Here" |
+| `partial_parts` | integer | count | Parts abandoned unfinished — the program was restarted from the top instead of being continued |
+| `partial_part_equiv` | float | parts | Sum of how far those partial parts got (e.g. one half-done part = `0.5`) |
+| `last_partial_pct` | float \| null | % | How far the most recent partial part got |
+| `program_progress_pct` | float | % | Progress of the current part through the program's moves (carried across Run From Here; kept while a part awaits continuation) |
+| `part_in_progress` | boolean | — | `true` while a part is running or has been interrupted and not yet finished/abandoned |
 | `last_cycle_ms` | integer \| null | ms | Duration of the most recently completed part cycle |
 | `last_abort_ms` | integer \| null | ms | Duration of the most recently aborted cycle |
 | `avg_cycle_ms` | float \| null | ms | Rolling average of completed cycle durations |
 | `total_completed_cycles` | integer | count | Total cycles that produced a part |
 | `cycle_complete_signalled` | boolean | — | `true` if the M2/M30 end line was reached this cycle |
 | `is_run_from_here` | boolean | — | `true` if the current cycle started mid-program |
-| `gcode_end_line` | integer | line | Line number of last M2/M30/`%` in the loaded file. `-1` if none found |
+| `gcode_end_line` | integer | line | Line of the M2/M30 program end (the closing `%` only if the file has neither). `-1` if none found |
 | `gcode_first_exec_line` | integer | line | First executable line number in the loaded file |
+| `gcode_tail_line` | integer | line | Last move line before the program end — reaching it and going idle normally means the part finished. `-1` if none |
 
 ### 4.2 Machine state
 
@@ -144,9 +150,12 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 
 ```json
 "joints": [
-  { "id": 0, "pos": 12.345678, "vel": 0.045, "homed": true, "fault": false, "ferror": 0.000012 }
+  { "id": 0, "pos": 12.345678, "vel": 0.045, "homed": true, "fault": false,
+    "ferror": 0.000012, "hard_limit": false }
 ]
 ```
+
+`hard_limit` is `true` while the joint is on its min or max hard limit switch.
 
 ### 4.6 Spindle data — `spindles` (array)
 
@@ -264,3 +273,4 @@ VPN or equivalent.
 |---|---|---|
 | 1 | 2026-09 | Initial formal spec. Adds `proto` and `machine_name` to all packets (additive over the pre-spec v1.2.0 payload). |
 | 1 | 2026-09 | Additive: per-axis `work` position; `wcs`, `g92_offset`, `tool_offset` in machine state; `last_abort_ms`. No version bump (additive). |
+| 1 | 2026-09 | Additive: `partial_parts`, `partial_part_equiv`, `last_partial_pct`, `program_progress_pct`, `part_in_progress`, `gcode_tail_line`, per-joint `hard_limit`. `gcode_end_line` now points at M2/M30 rather than a trailing `%`. No version bump. |

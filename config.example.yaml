@@ -29,6 +29,10 @@ machine_name: ""
 # Seconds between status packets while the machine is active. 1.0 is typical.
 poll_interval_s: 1.0
 
+# Seconds between LinuxCNC status reads used for cycle / part tracking.
+# Faster than poll_interval_s so the last move before M2/M30 is never missed.
+sample_interval_s: 0.1
+
 # Seconds between keep-alive packets while the machine is idle.
 idle_heartbeat_interval_s: 30.0
 
