@@ -144,6 +144,7 @@ linuxcnc-status-monitor/
 ├── program_tracker.py         # M2/M30 + Run From Here detection from line numbers
 ├── cycle_time_calculator.py   # Cycle timing, parts / aborts / partial parts
 ├── agent_net.py               # Where packets go (broadcast / IP / host name)
+├── agent_gcode.py             # Streams the loaded program to the dashboard
 ├── agent_runtime.py           # LinuxCNC process watch, config location, lock
 ├── config.example.yaml        # Settings template
 ├── PROTOCOL.md                # Normative UDP wire protocol (agent ↔ dashboard)
