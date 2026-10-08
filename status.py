@@ -111,7 +111,7 @@ import signal
 import socket
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 try:
     import linuxcnc
@@ -124,6 +124,7 @@ except ImportError:
     sys.exit(1)
 
 from agent_journal import Journal, JournalServer
+from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
 from agent_runtime import USER_CONFIG_DIR, LinuxCNCWatch, find_config, single_instance
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
@@ -150,7 +151,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "poll_interval_s":           1.0,             # seconds between active status packets
     "sample_interval_s":         0.1,             # seconds between stat reads (cycle tracking)
     "idle_heartbeat_interval_s": 30.0,            # keep-alive interval while idle
-    "gcode_chunk_size":          50_000,          # bytes per G-code file chunk
+    "gcode_chunk_size":          1000,            # characters per G-code chunk (a packet always fits one frame)
+    "gcode_resend_s":            60.0,            # send the loaded program again this often (0 = only on change)
     "log_file":                  "/tmp/cnc_status.log",
     "log_max_bytes":             5 * 1024 * 1024,
     "log_backup_count":          3,
@@ -628,59 +630,6 @@ def _collect_machine_status(stat: linuxcnc.stat) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# G-code file sender
-# ---------------------------------------------------------------------------
-class _GcodeFileSender:
-    """Sends full G-code file on load; re-sends only when file changes."""
-
-    def __init__(self, chunk_size: int, machine_name: str) -> None:
-        self._chunk_size:       int   = chunk_size
-        self._machine_name:     str   = machine_name
-        self._sent_fingerprint: Tuple = ("", 0, 0)
-
-    def reset(self) -> None:
-        """Forget what was sent so the file is re-sent after a LinuxCNC restart."""
-        self._sent_fingerprint = ("", 0, 0)
-
-    def check_and_send(self, stat: linuxcnc.stat, sender: UdpSender) -> None:
-        meta      = _collect_file_meta(stat)
-        fp        = (meta["file_name"], meta["file_size"], meta["file_modified_ms"])
-        file_path = _safe_get(stat, "file", "") or ""
-
-        if fp == self._sent_fingerprint or not file_path or not meta["file_name"]:
-            return
-
-        logger.info("G-code file changed → %s (%d bytes). Sending.",
-                    meta["file_name"], meta["file_size"])
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-
-            total_chunks = max(1, (len(content) + self._chunk_size - 1) // self._chunk_size)
-            for idx in range(total_chunks):
-                chunk  = content[idx * self._chunk_size:(idx + 1) * self._chunk_size]
-                packet = json.dumps({
-                    "type":             "gcode_file",
-                    "proto":            PROTOCOL_VERSION,
-                    "ts":               int(time.time_ns() // 1_000_000),
-                    "machine_name":     self._machine_name,
-                    "file_name":        meta["file_name"],
-                    "file_size":        meta["file_size"],
-                    "file_modified_ms": meta["file_modified_ms"],
-                    "chunk_index":      idx,
-                    "total_chunks":     total_chunks,
-                    "content":          chunk,
-                }).encode("utf-8")
-                sender.send(packet)
-                logger.debug("Sent gcode chunk %d/%d (%d bytes)",
-                             idx + 1, total_chunks, len(packet))
-            self._sent_fingerprint = fp
-
-        except OSError as exc:
-            logger.error("Cannot read G-code file for sending: %s", exc)
-
-
-# ---------------------------------------------------------------------------
 # Argument parsing / dev mode
 # ---------------------------------------------------------------------------
 def _parse_args() -> argparse.Namespace:
@@ -788,7 +737,8 @@ def main() -> None:
     state_machine = _CycleStateMachine(calculator, scanner)
     sender        = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
                               cfg["exclude_interfaces"])
-    gcode_sender  = _GcodeFileSender(cfg["gcode_chunk_size"], machine_name)
+    gcode_sender  = GcodeFileSender(cfg["gcode_chunk_size"], machine_name, PROTOCOL_VERSION,
+                                    cfg["gcode_resend_s"])
     watch         = LinuxCNCWatch()
 
     # History kept on this PC so a dashboard that was closed / off can fetch
@@ -932,7 +882,8 @@ def main() -> None:
         # Send G-code file if new/changed
         # ------------------------------------------------------------------
         try:
-            gcode_sender.check_and_send(stat_channel, sender)
+            gcode_sender.check_and_send(_safe_get(stat_channel, "file", "") or "",
+                                        _collect_file_meta(stat_channel), sender.send)
         except Exception as exc:
             logger.debug("G-code file send error: %s", exc)
 

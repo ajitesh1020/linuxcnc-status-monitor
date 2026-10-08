@@ -45,8 +45,13 @@ sample_interval_s: 0.1
 # Seconds between keep-alive packets while the machine is idle.
 idle_heartbeat_interval_s: 30.0
 
-# Bytes per chunk when streaming the loaded G-code file (kept under the UDP limit).
-gcode_chunk_size: 50000
+# Characters per chunk when streaming the loaded G-code file. A packet never
+# exceeds one network frame whatever this says, so an old value of 50000 is safe.
+gcode_chunk_size: 1000
+
+# Send the loaded program again this often (seconds), so a dashboard started
+# later, or one that lost a packet, still gets it. 0 = only when it changes.
+gcode_resend_s: 60
 
 # Log file path (only written in dev mode: lcnc-status-agent --dev).
 log_file: "/tmp/cnc_status.log"

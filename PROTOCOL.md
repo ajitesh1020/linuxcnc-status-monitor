@@ -195,8 +195,11 @@ AXIS GUI wins the NML queue race in most cases and consumes the message first
 
 ## 5. G-code file packet (`type: "gcode_file"`)
 
-Sent once when a program is loaded, and again whenever the loaded file changes.
-Large files are split into chunks of `gcode_chunk_size` bytes (default 50,000).
+Sent when a program is loaded, whenever the loaded file changes, and again every
+`gcode_resend_s` seconds (default 60) so a dashboard that started later, or lost a
+packet, still gets it. A receiver that already has the file simply ignores the repeat.
+The file is split so that every packet fits one network frame (at most about 1,400
+bytes), whatever `gcode_chunk_size` is set to (default 1,000 characters).
 
 ```json
 {

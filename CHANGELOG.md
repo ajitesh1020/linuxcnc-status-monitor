@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The loaded program now reaches the dashboard (live toolpath).** It used to be sent
+  once, in chunks of up to 50,000 characters. Such a datagram is cut into dozens of IP
+  fragments, so losing any one lost the whole chunk, and a chunk could pass the UDP size
+  limit and fail outright; the file was still marked as sent, and reloading the same file
+  sent nothing. Now every packet fits one network frame, the file counts as sent only when
+  every packet went out (else it is retried), it is sent from a background thread with
+  pacing, and it is repeated every `gcode_resend_s` (60 s) for a dashboard started later.
+
 ## [1.5.0]
 
 ### Added

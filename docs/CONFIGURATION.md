@@ -34,7 +34,8 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `poll_interval_s` | float | `1.0` | Seconds between status packets while active |
 | `sample_interval_s` | float | `0.1` | Seconds between LinuxCNC reads for cycle / part tracking |
 | `idle_heartbeat_interval_s` | float | `30.0` | Keep-alive interval while idle |
-| `gcode_chunk_size` | int | `50000` | Max bytes per UDP G-code chunk |
+| `gcode_chunk_size` | int | `1000` | Max characters per G-code chunk; a packet always fits one network frame (about 1.4 KB) |
+| `gcode_resend_s` | float | `60` | The loaded program is sent again this often so a late-started dashboard gets it; `0` = only on change |
 | `log_file` | string | `"/tmp/cnc_status.log"` | Log path (dev mode only) |
 | `log_max_bytes` | int | `5242880` | Rotate the log after this many bytes (dev mode) |
 | `log_backup_count` | int | `3` | Rotated logs to keep (dev mode) |
