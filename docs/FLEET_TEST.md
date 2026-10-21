@@ -133,10 +133,11 @@ Use a fresh `--dir` for both tools in each scenario (`run2`, `fleet2`, …).
 | E | | | | |
 | F | | | | |
 | G | | | | |
-| H | | | | |
-| I | | | | |
+| H1 | 22 Oct 2026 | 99 sim, 30 min + 180 s, defaults, seed 2 | 97 of 99 exact — parts 3510/3510, aborts 280/282, E-stops 99/99, cmd fail 46/46, joint 27/27; 0 dropped / swapped | Known case, passes: FloorWatch ran `--hours 0.25`, down 60 s, restarted on the same `--dir`. SIM-062 and SIM-080 are 1 abort short each; for both the first missed journal entry is the abort (saved position 99 → abort at seq 100, 01:25:27.6; 97 → abort at 98, 01:25:29.4; FloorWatch stopped 01:25:29). Restart log: `Backfilling SIM-062: journal 99..107`, `SIM-080: journal 97..105`. 0 `history_gaps` |
+| H2 | 22 Oct 2026 | 99 sim, 30 min + 180 s, defaults, seed 3 | **99 of 99 exact** — parts 3496/3496, aborts 277/277, E-stops 93/93, cmd fail 46/46, joint 21/21; 0 dropped / swapped | FloorWatch `kill -9` at 15 min, down 60 s, restarted on the same `--dir`; backfill recovered everything. 0 `history_gaps`, no warnings |
+| I | 22 Oct 2026 | 99 sim, 30 min + 180 s, defaults, seed 4 | 97 of 99 exact — parts 3538/3538, aborts 240/242, E-stops 92/92, cmd fail 46/46, joint 17/17 | Passes. FloorWatch ran 3 min (saved SIM-001 at seq 20), down 5 min; SIM-001 entries 1–21 deleted (journal 22..54 left). Log: `History for SIM-001 not recoverable: journal 20..21 (pruned)`; one `history_gaps` row (SIM-001, 20–21, `pruned`); SIM-001 itself still exact (seq 21 held no count change). SIM-010 and SIM-094 1 abort short each = the H case: saved position 20, abort at seq 21 (02:26:24.6 / 02:26:27.5), FloorWatch stopped 02:26:24. Also one unprompted backfill (`SIM-094: journal 158..160`) with no netem — a loopback packet loss, recovered |
 | J | | | | |
-| K | | | | |
+| K | 22 Oct 2026 | 99 sim, 30 min + 180 s, defaults, seed 5; `--gcode` adds a 5 MB program (10 machines get it) | **99 of 99 exact** — parts 3501/3501, aborts 260/260, E-stops 91/91, cmd fail 48/48, joint 21/21 | Known open (F05), as expected: `gcode_file from SIM-0x1 refused: 5243 chunks claimed (limit 4096)` for all 10 machines. Status and counts unaffected. Note: the refusal is logged on every resend (60 s), 30× per machine, 300 warnings in 33 min — log noise to fix with F05 |
 | L | 21–22 Oct 2026 | = run A (99 sim, 1 h) | `soak_report`: PASSED (memory, CPU, handles, threads within §12) | Indicative only (Linux, not the Windows reference PC): RSS 150 → 213 MB, CPU ~4 % of one core, 19–23 handles, 6 threads, DB 35 MB/h. fleet_sim ~25 % of one core. Real agent idle (LinuxCNC not running) |
 
 LinuxCNC version: · PC: · FloorWatch commit: · agent commit:
