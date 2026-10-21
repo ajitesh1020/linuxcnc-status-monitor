@@ -4,6 +4,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Fleet simulator** `tools/fleet_sim.py` (a test tool; not installed by the
+  .deb). Simulates many machines with the agent's own journal, history server,
+  packet timing and G-code sender — `session_id` / `packet_seq` / `cmd_state`,
+  cycles, aborts, E-stops, joint faults, failed commands, agent restarts — and
+  writes what really happened to `truth.json`. `fleet_sim.py check` compares a
+  dashboard's history database with it: parts and events must match exactly.
+  `--drop` / `--reorder` lose or swap packets; `docs/FLEET_TEST.md` is the
+  procedure for running FloorWatch and 100 machines on the LinuxCNC PC with
+  `tc netem` loss, reordering, duplication and outages.
+
 ## [1.6.0]
 
 ### Added
