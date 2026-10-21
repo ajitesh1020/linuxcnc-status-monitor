@@ -15,6 +15,8 @@ class FakeStat:
         self.estop = False
         self.task_state = 4
         self.exec_state = 2
+        self.state = 1                       # RCS_DONE
+        self.echo_serial_number = 10
         self.joints = 2
         self.joint = [{"fault": False}, {"fault": False}]
         self.__dict__.update(kw)
@@ -34,6 +36,21 @@ class FaultSignatureTests(unittest.TestCase):
         # While running exec_state moves between DONE / WAITING_FOR_* ...
         self.assertEqual(fault_signature(FakeStat(exec_state=7)),
                          fault_signature(FakeStat(exec_state=2)))
+
+    def test_each_failed_command_is_an_edge(self):
+        ok = fault_signature(FakeStat())
+        failed = fault_signature(FakeStat(state=3, echo_serial_number=11))
+        self.assertNotEqual(failed, ok)
+        # A second failed command right after the first is a new edge too.
+        self.assertNotEqual(fault_signature(FakeStat(state=3, echo_serial_number=12)),
+                            failed)
+
+    def test_successful_commands_are_not_faults(self):
+        # Every command changes the serial and passes through RCS_EXEC (2).
+        base = fault_signature(FakeStat())
+        for stat in (FakeStat(echo_serial_number=11), FakeStat(state=2),
+                     FakeStat(state=2, echo_serial_number=12)):
+            self.assertEqual(fault_signature(stat), base)
 
     def test_missing_or_broken_fields_do_not_raise(self):
         class Broken:

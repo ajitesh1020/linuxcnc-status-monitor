@@ -122,7 +122,9 @@ journal entries, so replayed history shows restarts too.
 | `task_state` | integer | `1`=ESTOP `2`=ESTOP_RESET `3`=OFF `4`=ON |
 | `task_mode` | integer | `1`=MANUAL `2`=AUTO `3`=MDI |
 | `interp_state` | integer | LinuxCNC interpreter-state enum |
-| `exec_state` | integer | LinuxCNC exec-state enum. **`1` = EXEC_ERROR** — reliable error indicator (see §7) |
+| `exec_state` | integer | LinuxCNC exec-state enum. `1` = EXEC_ERROR. Not set by a G-code error in MDI — use `cmd_state` (see §7) |
+| `cmd_state` | integer | Result of the last command (`stat.state`): `1`=DONE `2`=EXEC `3`=**ERROR** — a command failed (G-code error, unknown M-code…); stays `3` until the next command succeeds. Agent ≥ 1.6.0 |
+| `cmd_serial` | integer | Serial of the last command (`stat.echo_serial_number`). Changes with every command; a new value with `cmd_state == 3` is a new error. Agent ≥ 1.6.0 |
 | `estop` | boolean | `true` if in E-stop |
 | `enabled` | boolean | `true` if drives are powered |
 | `paused` | boolean | `true` if feed hold is active |
@@ -206,7 +208,7 @@ journal entries, so replayed history shows restarts too.
 Agent ≥ 1.6.0: always `[]` unless `read_error_channel: true` is set on the
 agent, because reading the NML queue removes messages before the operator's
 GUI shows them (see §7). Do not rely on `nml_errors` for error detection; use
-`exec_state == 1`, `estop`, `task_state` and the joint flags.
+`cmd_state == 3`, `exec_state == 1`, `estop`, `task_state` and the joint flags.
 
 ---
 
@@ -321,11 +323,18 @@ So since 1.6.0 the agent does **not** open the error channel unless
 
 - `nml_errors` is `[]` by default. With `read_error_channel: true` it carries the
   messages the agent read — and the operator's GUI may then miss them.
-- Use **`exec_state == 1` (EXEC_ERROR)** as the reliable, non-consuming
-  error-condition indicator in the dashboard.
+- A **failed command** (G-code error, unknown M-code, zero feed…) shows as
+  **`cmd_state == 3`** (RCS_ERROR). It stays `3` until the next command
+  succeeds; each new `cmd_serial` while `cmd_state == 3` is one more error.
+  Nothing is consumed, so the GUI still shows the message. The message text
+  itself is not available without the error channel.
+- `exec_state == 1` (EXEC_ERROR) is an error during execution. Do not rely on
+  it alone: on LinuxCNC 2.9 a G-code error in MDI never sets it (exec_state
+  goes from waiting straight back to done).
 - `estop == true` and `task_state == 1` indicate an E-stop condition.
 - **Fault edges are immediate** (agent ≥ 1.6.0): the agent compares `estop`,
-  `task_state`, EXEC_ERROR and each joint's `fault` / `hard_limit` on every
+  `task_state`, EXEC_ERROR, a failed command (`cmd_state` / `cmd_serial`) and
+  each joint's `fault` / `hard_limit` on every
   sample (default 0.1 s) and sends a status packet at once when any of them
   changes, also while idle; the journal records both edges. A fault shorter
   than one sample can still be missed.
@@ -359,3 +368,4 @@ VPN or equivalent.
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
+| 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

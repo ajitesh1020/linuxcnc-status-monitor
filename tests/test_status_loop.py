@@ -57,6 +57,7 @@ def make_fake_linuxcnc(sc):
     mod = types.ModuleType("linuxcnc")
     mod.INTERP_IDLE, mod.INTERP_READING, mod.INTERP_PAUSED = 1, 2, 3
     mod.EXEC_ERROR = 1
+    mod.RCS_ERROR = 3
 
     class stat:
         def poll(self):
@@ -65,6 +66,7 @@ def make_fake_linuxcnc(sc):
                 sc.status._shutdown_requested = True
             self.task_state, self.task_mode, self.interp_state = 4, 1, 1
             self.exec_state, self.estop, self.paused = 2, False, False
+            self.state, self.echo_serial_number = 1, 10    # RCS_DONE
             self.enabled = True
             self.joints = 2
             self.joint = [{"fault": False, "homed": True},
@@ -174,6 +176,26 @@ class StatusLoopTests(unittest.TestCase):
         self.assertNotEqual(states[-1], 1)                 # the clear edge went out too
         self.assertEqual(len(packets), 3)                  # first idle packet, set, clear
         self.assertEqual([e["exec_state"] for e in journal][-2:], [1, 2])
+
+    def test_idle_failed_mdi_commands_each_sent_and_journalled(self):
+        # Two G-code errors in a row while idle (EXEC_ERROR is never set; only
+        # stat.state goes to RCS_ERROR), then a good command clears it.
+        sc, packets, journal = self.run_agent([
+            (8.0, 9.0, "state", 3),
+            (8.0, 8.5, "echo_serial_number", 11),
+            (8.5, 9.0, "echo_serial_number", 12),
+            (9.0, 99.0, "echo_serial_number", 13),
+        ])
+        self.assertEqual([(p["cmd_state"], p["cmd_serial"]) for p in packets],
+                         [(1, 10), (3, 11), (3, 12), (1, 13)])
+        self.assertEqual([(e["cmd_state"], e["cmd_serial"]) for e in journal][-3:],
+                         [(3, 11), (3, 12), (1, 13)])
+
+    def test_successful_commands_while_idle_send_nothing_extra(self):
+        sc, packets, _ = self.run_agent([(5.0, 99.0, "echo_serial_number", 11),
+                                         (5.0, 5.2, "state", 2),
+                                         (9.0, 99.0, "echo_serial_number", 12)])
+        self.assertEqual(len(packets), 1)                  # just the first idle packet
 
     def test_idle_joint_fault_and_estop_edges(self):
         sc, packets, journal = self.run_agent(

@@ -45,7 +45,7 @@ systemctl --user start lcnc-status-agent
 Watch the packets on the same PC (second terminal):
 
 ```bash
-python3 examples/udp_receiver.py --fields ts session_id packet_seq cycle_state estop task_state exec_state nml_errors journal_seq journal_port
+python3 examples/udp_receiver.py --fields ts session_id packet_seq cycle_state estop task_state exec_state cmd_state cmd_serial nml_errors journal_seq journal_port
 ```
 
 ## 2. F01 — the operator's screen keeps every message
@@ -65,8 +65,10 @@ stopped for comparison. Optional: set `read_error_channel: true` in
 `~/linuxcnc-monitor-agent/config.yaml`, restart the agent and repeat — the GUI may
 now miss some; that is why it is off. Set it back to `false`.
 
-Also confirm in the receiver output that `nml_errors` is always `[]`, and that the
-G-code error makes `exec_state` go to `1`.
+Also confirm in the receiver output that `nml_errors` is always `[]`, and that
+each G-code error (rows 3 and 4) sends a packet at once with `cmd_state: 3` and a
+new `cmd_serial`, and the next good command sends one with `cmd_state: 1`.
+(`exec_state` does not go to `1` for these errors on LinuxCNC 2.9.)
 
 ## 3. F04 — idle faults arrive at once, both edges
 
