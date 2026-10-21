@@ -8,7 +8,7 @@
 # GNU General Public License v2 or later. See the LICENSE file for details.
 # It links the GPL-licensed LinuxCNC Python module and is therefore GPL.
 """
-status.py  —  v1.5.0
+status.py  —  v1.6.0
 =====================
 LinuxCNC status monitor agent — streams machine state to the dashboard.
 
@@ -21,35 +21,30 @@ Responsibilities
      and the executed line numbers — NO changes to G-code files required.
   4. Detect "Run From Here" starts, carry an interrupted part across them,
      and record abandoned parts as partial parts (see program_tracker.py).
-  5. Suppress UDP packets while idle; send one heartbeat every 30 s.
+  5. Suppress UDP packets while idle; send one heartbeat every 30 s. A change
+     in E-stop, machine on/off, EXEC_ERROR, a joint fault or a hard limit is
+     sent at once, idle or not (agent_packets.py).
   6. Stream the full G-code file once on load; re-send on file change.
-  7. Passively poll the NML error channel — AXIS always wins the queue race
-     and displays errors to the operator; status.py captures only what
-     AXIS misses (best-effort, not guaranteed).
+  7. Never read the NML error channel unless read_error_channel is set in
+     config.yaml (see below).
   8. DEV_MODE via --dev flag OR CNC_DEV_MODE=1 env var.
 
-NML Error Design Decision
+NML Error Channel (v1.6.0)
 --------------------------
-The LinuxCNC error channel is a NML *queue*. The official documentation
-states:
+The LinuxCNC error channel is a NML *queue*: the first reader of a message
+removes it, so a second reader can take a message before the operator's GUI
+(AXIS, QtDragon, Gmoccapy...) shows it. LinuxCNC recommends a single reader:
+https://linuxcnc.org/docs/html/config/python-interface.html#_reading_the_error_channel
 
-  "The first consumer of an error message DELETES that message from the
-   queue. Whether another error message consumer (e.g. AXIS) will see the
-   message is dependent on timing. It is recommended to have just one
-   error channel reader task in a setup."
+So by default the agent does not open the error channel at all. Faults are
+reported from status flags, which nothing consumes: estop, task_state,
+exec_state (1 = EXEC_ERROR) and each joint's fault / hard-limit flags. These
+are checked on every sample and any change is sent at once. nml_errors in the
+packet is then always [].
 
-This means: whoever calls error_channel.poll() first gets the message,
-and it is gone for everyone else.
-
-Design choice: AXIS operator visibility takes priority.
-  - status.py polls the error channel ONCE per second in the main loop
-  - AXIS polls much faster and will win the race in most cases
-  - The operator at the machine always sees error notifications
-  - The monitoring PC receives any errors status.py happens to catch
-    (typically during startup before AXIS is polling, or on rare timing wins)
-  - nml_errors in the UDP packet is best-effort, not guaranteed
-  - exec_state in every packet reliably signals an error condition without
-    consuming the queue: exec_state == 1 means EXEC_ERROR
+read_error_channel: true restores the old behaviour (message text in
+nml_errors), at the cost that the operator's screen may miss a message. Use it
+only on a machine whose GUI does not need those messages, after checking.
 
 Logging (v1.3.0)
 -----------------
@@ -126,11 +121,12 @@ except ImportError:
 from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
+from agent_packets import PacketGate, fault_signature
 from agent_runtime import USER_CONFIG_DIR, LinuxCNCWatch, find_config, single_instance
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 from program_tracker import CycleLineTracker, ProgramScanner
 
-AGENT_VERSION: str = "1.5.0"
+AGENT_VERSION: str = "1.6.0"
 
 # ---------------------------------------------------------------------------
 # Protocol
@@ -159,7 +155,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "journal_days":              14.0,            # history kept on this PC for the dashboard
     "journal_interval_s":        10.0,            # journal at least this often while active
     "journal_port":              5006,            # UDP port the dashboard fetches history from (0 = off)
+    "read_error_channel":        False,           # True = also read NML messages (may hide them from the GUI)
 }
+
+JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
 
 # Config file location: see agent_runtime.find_config() —
 # ~/linuxcnc-monitor-agent/config.yaml is created on first run.
@@ -365,19 +364,15 @@ def _is_program_paused(stat: linuxcnc.stat) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# NML error drain — passive, best-effort
+# NML error drain — only with read_error_channel: true
 # ---------------------------------------------------------------------------
 def _drain_nml_errors(error_channel: linuxcnc.error_channel) -> List[Dict]:
     """
-    Drain whatever NML errors status.py happens to catch this tick.
+    Drain the NML error queue. Only called when read_error_channel is set.
 
-    AXIS will win the queue race in most cases and display errors to the
-    operator. This function captures only what AXIS misses. The result is
-    best-effort: nml_errors in the UDP packet may be empty even when an
-    error occurred.
-
-    Use exec_state == 1 (EXEC_ERROR) in the status packet for a reliable
-    error-condition indicator that does not consume the queue.
+    Every message read here is REMOVED from the queue, so the operator's GUI
+    may never show it. That is why this is off by default; the status flags
+    (exec_state, estop, joint faults) report faults without consuming.
     """
     errors: List[Dict] = []
     try:
@@ -675,6 +670,9 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
     print(f"  sending to    : {', '.join(sender.targets) or '(nothing!)'} "
           f"port {cfg['monitor_pc_port']}")
     print(f"  LinuxCNC      : {'running' if running else 'not running'}")
+    print(f"  error channel : "
+          f"{'READ (messages may not reach the operator GUI)' if cfg['read_error_channel'] else 'not read (default)'}")
+    print(f"  history port  : {cfg['journal_port'] or 'off'}")
     sender.close()
 
 
@@ -747,7 +745,15 @@ def main() -> None:
                             cfg["journal_interval_s"], cfg["journal_days"])
     journal_srv   = JournalServer(journal.path, cfg["journal_port"], machine_name,
                                   journal.agent_id)
-    journal_port  = cfg["journal_port"] if journal.enabled and journal_srv.start() else 0
+    journal_srv_wanted = journal.enabled and cfg["journal_port"] > 0
+    if journal_srv_wanted:
+        journal_srv.start()
+    last_journal_restart: float = time.monotonic()
+
+    read_error_channel: bool = bool(cfg["read_error_channel"])
+    if read_error_channel:
+        logger.warning("read_error_channel is on: NML messages read by the agent may "
+                       "not be shown by the operator's GUI.")
 
     stat_channel:  Optional[linuxcnc.stat]          = None
     error_channel: Optional[linuxcnc.error_channel] = None
@@ -757,7 +763,8 @@ def main() -> None:
         nonlocal stat_channel, error_channel
         try:
             stat_channel  = linuxcnc.stat()
-            error_channel = linuxcnc.error_channel()
+            # Opened only on request: reading it removes messages before the GUI sees them.
+            error_channel = linuxcnc.error_channel() if read_error_channel else None
             logger.info("Connected to LinuxCNC channels.")
             return True
         except Exception as exc:
@@ -777,16 +784,11 @@ def main() -> None:
         state_machine.reset()
         gcode_sender.reset()
 
-    last_poll_time:          float = 0.0
+    gate                             = PacketGate(poll_interval_s, idle_heartbeat_interval_s)
     last_sample_time:        float = 0.0
-    last_sampled_state:      str   = ""
-    last_idle_heartbeat:     float = 0.0
     pending_nml_errors:      list  = []
     consecutive_poll_errors: int   = 0
     MAX_CONSECUTIVE_ERRORS:  int   = 10
-
-    prev_cycle_state: str  = ""
-    idle_packet_sent: bool = False
 
     # -----------------------------------------------------------------------
     # Main loop
@@ -858,19 +860,33 @@ def main() -> None:
             current_cycle_state = "UNKNOWN"
 
         # ------------------------------------------------------------------
-        # Everything below runs at the packet cadence, or at once on a
-        # cycle-state change so transitions reach the dashboard promptly.
+        # Everything below runs at the packet cadence, or at once when the
+        # cycle state or the fault picture (E-stop, machine on/off,
+        # EXEC_ERROR, joint fault / hard limit) changes. The fault check runs
+        # on every sample, so a short fault while idle is not missed.
         # ------------------------------------------------------------------
-        sampled_change     = current_cycle_state != last_sampled_state
-        last_sampled_state = current_cycle_state
-        if not sampled_change and now - last_poll_time < poll_interval_s:
+        try:
+            fault_sig = fault_signature(stat_channel,
+                                        getattr(linuxcnc, "EXEC_ERROR", 1))
+        except Exception as exc:
+            logger.debug("Fault signature error: %s", exc)
+            fault_sig = None
+        if not gate.tick(now, current_cycle_state, fault_sig):
             continue
-        last_poll_time = now
 
         # ------------------------------------------------------------------
-        # Passively drain NML errors — AXIS keeps priority on the queue.
-        # Any errors captured here are a bonus; nml_errors=[] is normal.
-        # Use exec_state==1 in the packet for a reliable error indicator.
+        # Keep the history server running: a stopped server is reported as
+        # journal_port 0 (no history) and restarted every JOURNAL_RESTART_S.
+        # ------------------------------------------------------------------
+        if (journal_srv_wanted and not journal_srv.alive
+                and now - last_journal_restart >= JOURNAL_RESTART_S):
+            last_journal_restart = now
+            logger.warning("Journal server stopped — restarting.")
+            journal_srv.start()
+
+        # ------------------------------------------------------------------
+        # NML messages — only with read_error_channel: true (off by default,
+        # because reading them can hide them from the operator's GUI).
         # ------------------------------------------------------------------
         if error_channel is not None:
             try:
@@ -888,24 +904,11 @@ def main() -> None:
             logger.debug("G-code file send error: %s", exc)
 
         # ------------------------------------------------------------------
-        # Idle suppression
+        # Idle suppression — never for a fault edge or a caught message.
         # ------------------------------------------------------------------
-        state_changed = current_cycle_state != prev_cycle_state
-
-        if current_cycle_state == "IDLE":
-            if state_changed:
-                idle_packet_sent    = False
-                last_idle_heartbeat = now
-            # Never suppress a packet that carries a caught error message.
-            if (idle_packet_sent and not pending_nml_errors
-                    and (now - last_idle_heartbeat) < idle_heartbeat_interval_s):
-                prev_cycle_state = current_cycle_state
-                logger.debug("IDLE — packet suppressed.")
-                continue
-        else:
-            idle_packet_sent = False
-
-        prev_cycle_state = current_cycle_state
+        if not gate.should_send(now, current_cycle_state, bool(pending_nml_errors)):
+            logger.debug("IDLE — packet suppressed.")
+            continue
 
         # ------------------------------------------------------------------
         # Build payload
@@ -956,9 +959,9 @@ def main() -> None:
                 # File
                 **_collect_file_meta(stat_channel),
 
-                # NML errors — best-effort only; [] is normal and expected.
-                # AXIS displays errors to the operator; we only catch extras.
-                # For reliable error detection use: exec_state == 1 (EXEC_ERROR)
+                # NML message text — always [] unless read_error_channel is on.
+                # Faults are reported by exec_state (1 = EXEC_ERROR), estop,
+                # task_state and the joint fault / hard_limit flags.
                 "nml_errors": pending_nml_errors.copy(),
             }
             pending_nml_errors.clear()
@@ -974,7 +977,8 @@ def main() -> None:
         if journal.enabled:
             payload["agent_id"]     = journal.agent_id
             payload["journal_seq"]  = journal.last_seq
-            payload["journal_port"] = journal_port
+            # 0 = history cannot be fetched right now (server off or stopped).
+            payload["journal_port"] = cfg["journal_port"] if journal_srv.alive else 0
 
         # ------------------------------------------------------------------
         # Serialise and send
@@ -989,10 +993,7 @@ def main() -> None:
             logger.warning("Payload %d bytes near UDP limit.", len(json_bytes))
 
         sent = sender.send(json_bytes)
-
-        if current_cycle_state == "IDLE":
-            idle_packet_sent    = True
-            last_idle_heartbeat = now
+        gate.sent(now, current_cycle_state)
 
         logger.debug(
             "Packet %s (%d bytes) | state=%s parts=%d aborts=%d",

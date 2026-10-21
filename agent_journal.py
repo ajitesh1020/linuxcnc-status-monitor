@@ -35,6 +35,9 @@ Serving — JournalServer answers on UDP `journal_port` (default 5006):
   Entries with from_seq < seq <= to_seq (to_seq optional), oldest first, up to
   ~16 KB per reply; the dashboard asks again from the last seq it got while
   "more" is true. Read-only: a request can only read history.
+  from_seq / to_seq must be whole numbers 0..2^63-1; anything else (1e309,
+  NaN, fractions, booleans) gets no reply. One bad request never stops the
+  server; `JournalServer.alive` says whether it is serving.
 
 Every status packet carries `agent_id`, `journal_seq` (newest seq) and
 `journal_port`, so a dashboard can tell exactly what it has missed.
@@ -196,16 +199,47 @@ class Journal:
             self._conn = None
 
 
-def build_reply(conn: sqlite3.Connection, request: Dict[str, Any], machine_name: str,
+MAX_SEQ = 2 ** 63 - 1   # largest SQLite INTEGER
+
+
+class _BadRequest(ValueError):
+    pass
+
+
+def _seq_arg(value: Any) -> int:
+    """A sequence number from a request: a whole number 0..MAX_SEQ.
+
+    Accepts a JSON integer, a whole float (5.0) or a short digit string.
+    Rejects booleans, fractions, NaN / infinity (JSON 1e309 parses as inf and
+    int(inf) raises OverflowError) and numbers too big for SQLite.
+    """
+    if isinstance(value, bool):
+        raise _BadRequest("boolean")
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")) or not value.is_integer():
+            raise _BadRequest("not a whole finite number")
+        n = int(value)
+    elif isinstance(value, str) and 0 < len(value.strip()) <= 20 and value.strip().isdigit():
+        n = int(value.strip())
+    else:
+        raise _BadRequest("not a number")
+    if not 0 <= n <= MAX_SEQ:
+        raise _BadRequest("out of range")
+    return n
+
+
+def build_reply(conn: sqlite3.Connection, request: Any, machine_name: str,
                 agent_id: str, max_bytes: int = MAX_REPLY_BYTES) -> Optional[Dict[str, Any]]:
     """Answer one journal_request (pure; testable). None if the request is invalid."""
     if not isinstance(request, dict) or request.get("type") != "journal_request":
         return None
     try:
-        from_seq = max(0, int(request.get("from_seq", 0)))
+        from_seq = _seq_arg(request.get("from_seq", 0))
         to_seq = request.get("to_seq")
-        to_seq = int(to_seq) if to_seq is not None else None
-    except (TypeError, ValueError):
+        to_seq = _seq_arg(to_seq) if to_seq is not None else None
+    except _BadRequest:
         return None
     first_seq, last_seq = conn.execute(
         "SELECT COALESCE(MIN(seq), 0), COALESCE(MAX(seq), 0) FROM entries").fetchone()
@@ -240,74 +274,120 @@ def build_reply(conn: sqlite3.Connection, request: Dict[str, Any], machine_name:
 
 
 class JournalServer:
-    """Background thread answering journal requests over UDP."""
+    """Background thread answering journal requests over UDP.
+
+    One bad request can never stop it: every request is handled inside its
+    own catch-all. `alive` says whether it is serving; the agent reports
+    journal_port 0 while it is not, and calls start() again to restart it.
+    """
 
     def __init__(self, path: str, port: int, machine_name: str, agent_id: str,
-                 max_replies_per_s: int = 50) -> None:
+                 max_replies_per_s: int = 50, bind_host: str = "") -> None:
         self._path = path
         self._port = int(port)
+        self._host = bind_host
         self._name = machine_name
         self._agent_id = agent_id
         self._max_rate = max_replies_per_s
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._sock: Optional[socket.socket] = None
+        self.bad_requests = 0   # requests rejected or that failed, for diagnostics
+
+    @property
+    def alive(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def start(self) -> bool:
+        """Start serving (again, after it stopped). True when serving."""
+        if self.alive:
+            return True
         if self._port <= 0:
-            return False
+            return False      # port 0 = off in the config
+        self._close_socket()
+        self._stop.clear()
         try:
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self._sock.bind(("", self._port))
-            self._sock.settimeout(0.5)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((self._host, self._port))
+            sock.settimeout(0.5)
         except OSError as exc:
             logger.warning("Journal server not started on UDP %d: %s", self._port, exc)
             return False
-        self._thread = threading.Thread(target=self._loop, name="journal-server", daemon=True)
+        self._sock = sock
+        self._thread = threading.Thread(target=self._loop, args=(sock,),
+                                        name="journal-server", daemon=True)
         self._thread.start()
         logger.info("Journal server listening on UDP %d", self._port)
         return True
 
-    def _loop(self) -> None:
+    def _loop(self, sock: socket.socket) -> None:
+        conn: Optional[sqlite3.Connection] = None
         try:
             conn = _open(self._path)
-        except (OSError, sqlite3.Error) as exc:
-            logger.warning("Journal server cannot open %s: %s", self._path, exc)
-            return
-        window_start, sent_in_window = time.monotonic(), 0
-        while not self._stop.is_set():
+            window_start, sent_in_window = time.monotonic(), 0
+            while not self._stop.is_set():
+                try:
+                    raw, addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    if self._stop.is_set():
+                        break
+                    time.sleep(0.1)
+                    continue
+                now = time.monotonic()
+                if now - window_start >= 1.0:
+                    window_start, sent_in_window = now, 0
+                if sent_in_window >= self._max_rate:
+                    continue
+                if self._answer(conn, sock, raw, addr):
+                    sent_in_window += 1
+        except Exception as exc:   # opening the database, or anything unforeseen
+            logger.warning("Journal server stopped: %s", exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
             try:
-                raw, addr = self._sock.recvfrom(4096)
-            except socket.timeout:
-                continue
+                sock.close()
             except OSError:
-                continue
-            now = time.monotonic()
-            if now - window_start >= 1.0:
-                window_start, sent_in_window = now, 0
-            if sent_in_window >= self._max_rate:
-                continue
+                pass
+
+    def _answer(self, conn: sqlite3.Connection, sock: socket.socket,
+                raw: bytes, addr: Any) -> bool:
+        """Handle one request. Never raises. True if a reply was sent."""
+        try:
+            reply = build_reply(conn, json.loads(raw.decode("utf-8")),
+                                self._name, self._agent_id)
+        except Exception as exc:   # bad JSON, deep nesting, overflow, database error...
+            self.bad_requests += 1
+            logger.debug("Bad journal request from %s: %s: %s",
+                         addr[0] if addr else "?", type(exc).__name__, exc)
+            return False
+        if reply is None:
+            self.bad_requests += 1
+            return False
+        try:
+            sock.sendto(json.dumps(reply, separators=(",", ":"),
+                                   default=str).encode("utf-8"), addr)
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            logger.debug("Journal reply to %s failed: %s", addr[0] if addr else "?", exc)
+            return False
+
+    def _close_socket(self) -> None:
+        if self._sock is not None:
             try:
-                reply = build_reply(conn, json.loads(raw.decode("utf-8")),
-                                    self._name, self._agent_id)
-            except (ValueError, UnicodeDecodeError, sqlite3.Error) as exc:
-                logger.debug("Bad journal request from %s: %s", addr[0], exc)
-                continue
-            if reply is None:
-                continue
-            try:
-                self._sock.sendto(json.dumps(reply, separators=(",", ":"),
-                                             default=str).encode("utf-8"), addr)
-                sent_in_window += 1
-            except OSError as exc:
-                logger.debug("Journal reply to %s failed: %s", addr[0], exc)
-        conn.close()
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
 
     def stop(self) -> None:
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
-        try:
-            self._sock.close()
-        except (OSError, AttributeError):
-            pass
+        self._close_socket()
