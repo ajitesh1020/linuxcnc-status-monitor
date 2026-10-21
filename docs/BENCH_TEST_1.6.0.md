@@ -140,12 +140,12 @@ low (a few % at most). Note the PC model, CPU, LinuxCNC version, GUI and Mesa ca
 | Check | Date | Result | Notes |
 |---|---|---|---|
 | Install / `--check` | 2026-10-21 | Pass | 1.6.0 installed over 1.5.0; error channel not read; history port 5006; 66 unit tests OK (none skipped, LinuxCNC is installed) |
-| F01 messages (per GUI) | 2026-10-21 | GUI: pass. Packets: **fail** | AXIS showed 10/10 for MSG, DEBUG, zero-feed G1 and M999, with the agent running and stopped (checked by screenshot). `nml_errors` always `[]`. But `exec_state` never goes to 1 on an MDI error in LinuxCNC 2.9.10 (7 → 2, polled every 1 ms), so no packet shows the error. `stat.state` goes to 3 (RCS_ERROR) and stays until the next good command; candidate fix. Optional `read_error_channel: true` run not done |
-| F04 E-stop edges | | | |
-| F04 joint fault / limit | | | |
+| F01 messages (per GUI) | 2026-10-21 | GUI: pass. Packets: **fail** | AXIS showed 10/10 for MSG, DEBUG, zero-feed G1 and M999, with the agent running and stopped (checked by screenshot). `nml_errors` always `[]`. But `exec_state` never goes to 1 on an MDI error in LinuxCNC 2.9.10 (7 → 2, polled every 1 ms), so no packet shows the error. `stat.state` goes to 3 (RCS_ERROR) and stays until the next good command. **Fixed in 21d30f7**: packets now carry `cmd_state` / `cmd_serial`; on the machine two M999 then a good command gave three packets within ~100 ms (cmd_state 3, 3, 1). Optional `read_error_channel: true` run not done |
+| F04 E-stop edges | 2026-10-21 | Pass | Software E-stop (no hardware on the port), reset within 2 s: packets 217 ms after press, 254 ms after reset + ON; both edges journalled |
+| F04 joint fault / limit | 2026-10-21 | Pass | Simulated with `halcmd setp` (pins unconnected): j0 `neg-lim-sw-in` on/off → 93 / 11 ms; j1 `amp-fault-in` on/off → 54 / 72 ms; a 0.3 s amp fault → 133 / 32 ms. All edges journalled with the right `joints` entry |
 | F06 bad requests | 2026-10-21 | Pass | Answered after the bad requests, same PID, still on 5006 |
 | Session / packet_seq | 2026-10-21 | Pass | +1 per packet over 220+ packets, no gaps; agent restart → new `session_id`, seq from 1; LinuxCNC-only restart → same `session_id`. `parts_produced` reset not shown (was already 0) |
-| Latency / CPU | | | |
+| Latency / CPU | 2026-10-21 | CPU pass; latency inconclusive | Baseline (no LinuxCNC, 10 min): base jitter max 76.0 µs, servo 65.4 µs. 10 min of the PCB program each (`servo-thread.tmax`, CPU clocks; ≈ µs at 3.7 GHz): agent stopped 1 123 180 (≈ 304 µs), running 2 083 656 (≈ 563 µs); `base-thread.tmax` 276 296 vs 268 529 (≈ 75 / 73 µs). A 20 s dry run earlier went the other way (3.67 M stopped, 1.10 M running), so one max per run is noise-dominated on this non-isolated PC. No following errors, no aborts, max ferror 0.042 mm both runs. Agent CPU 0.66 % average (top shows 6.7 % at the 60 s G-code resend). Repeat on OFC_PC with several alternating runs |
 
 LinuxCNC version: 2.9.10 · GUI: AXIS (config `test_config`, no hardware on the port) · Mesa / parport: parport `0xe100` · PC: Dell OptiPlex 9020, Intel i3-4170
 
