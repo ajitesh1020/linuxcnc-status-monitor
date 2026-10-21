@@ -184,6 +184,17 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual(estops, [False, False, False, True, False])
         self.assertEqual(len(journal), 5)
 
+    def test_packets_carry_session_and_increasing_packet_seq(self):
+        _, first, journal = self.run_agent([(6.0, 6.5, "exec_state", 1)])
+        sessions = {p["session_id"] for p in first}
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual([p["packet_seq"] for p in first], list(range(1, len(first) + 1)))
+        self.assertEqual({e["session_id"] for e in journal}, sessions)
+        # A restarted agent is a new session (its part counters start again at 0).
+        _, second, _ = self.run_agent([])
+        self.assertNotEqual({p["session_id"] for p in second}, sessions)
+        self.assertEqual(second[0]["packet_seq"], 1)
+
     def test_quiet_idle_machine_sends_only_heartbeats(self):
         sc, packets, _ = self.run_agent([], stop_at=65.0)
         self.assertEqual(len(packets), 3)                  # start, 30 s, 60 s

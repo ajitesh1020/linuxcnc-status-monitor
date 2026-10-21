@@ -106,6 +106,7 @@ import signal
 import socket
 import sys
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 try:
@@ -785,6 +786,12 @@ def main() -> None:
         gcode_sender.reset()
 
     gate                             = PacketGate(poll_interval_s, idle_heartbeat_interval_s)
+    # Stream identity for the dashboard (PROTOCOL.md §4.1b): a new session_id on
+    # every agent start (the part counters restart at 0 with it), and packet_seq
+    # counting status packets within it, so a delayed or reordered packet can be
+    # told apart from a newer one whatever the wall clock does.
+    session_id:              str   = uuid.uuid4().hex[:16]
+    packet_seq:              int   = 0
     last_sample_time:        float = 0.0
     pending_nml_errors:      list  = []
     consecutive_poll_errors: int   = 0
@@ -915,12 +922,15 @@ def main() -> None:
         # ------------------------------------------------------------------
         try:
             snap: CycleSnapshot = calculator.snapshot()
+            packet_seq += 1
 
             payload: Dict[str, Any] = {
                 "type":         "status",
                 "proto":        PROTOCOL_VERSION,
                 "ts":           int(time.time_ns() // 1_000_000),
                 "machine_name": machine_name,
+                "session_id":   session_id,
+                "packet_seq":   packet_seq,
 
                 # Cycle & production
                 "cycle_state":              current_cycle_state,

@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.6.0]
 
+### Added
+
+- **Stream identity** (for review finding F02): every status packet carries
+  `session_id` (new on each agent start; the part counters restart with it) and
+  `packet_seq` (counts packets within the session). A dashboard can then drop a
+  delayed or reordered packet, and tell a restart from a lower count, whatever the
+  wall clock does. `session_id` is journalled too. See PROTOCOL.md §4.1b.
+
 ### Changed
 
 - **The NML error channel is no longer read by default** (review F01). Reading it

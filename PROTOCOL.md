@@ -99,6 +99,22 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `journal_seq` | integer | Seq of the newest journal entry at send time |
 | `journal_port` | integer | UDP port that answers history requests (§5a); `0` = not available (off, or the history server stopped — agent ≥ 1.6.0 restarts it within a minute) |
 
+### 4.1b Stream identity (agent ≥ 1.6.0)
+
+| Field | Type | Description |
+|---|---|---|
+| `session_id` | string | Random id made each time the agent starts. The part / abort counters start again at 0 with a new one |
+| `packet_seq` | integer | Counts status packets within a session, from 1 |
+
+A receiver orders a machine's packets by (`session_id`, `packet_seq`), not by
+`ts`: UDP may deliver a packet late or out of order, and the machine's clock can
+be set back. A packet whose `packet_seq` is not higher than the last one accepted
+in its session, or that comes from a session already replaced, is stale and is
+dropped. A counter that goes down **within** a session is not a restart; a new
+`session_id` is. (Agents without these fields: order by `ts`, treating a packet up
+to ~10 s older than the newest as a delayed copy.) `session_id` is also stored in
+journal entries, so replayed history shows restarts too.
+
 ### 4.2 Machine state
 
 | Field | Type | Description |
@@ -266,6 +282,15 @@ the request's source address and port.
 | `more` | `true` → ask again with `from_seq` = the last seq received |
 | `first_seq` | Oldest seq still kept — anything below it was pruned |
 
+**Finding what is missing.** Every journal entry is written from a status packet
+that carries its seq in `journal_seq`, so consecutive packets from one agent
+differ by 0 or 1. A step of more than 1 means packets carrying journal entries
+were lost, however short the outage: fetch `(last seq held, journal_seq]`.
+Keep the position saved per machine as a *committed watermark* — move it past a
+range only once that range is stored — so a failed fetch is retried rather than
+skipped. If `first_seq` is above the range's start, those entries were pruned:
+record that span as unrecoverable history and carry on from `first_seq`.
+
 Replies are ~16 KB at most. Requests are read-only and rate-limited; they
 cannot change anything on the machine. Treat `ts_ms` as the time of the data.
 
@@ -333,3 +358,4 @@ VPN or equivalent.
 | 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
+| 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |

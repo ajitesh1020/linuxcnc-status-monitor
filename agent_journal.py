@@ -68,6 +68,7 @@ JOURNAL_FIELDS = (
     "program_progress_pct", "part_in_progress", "is_run_from_here",
     "exec_state", "estop", "task_state", "task_mode", "motion_line",
     "file_name", "wcs", "tool_in_spindle", "feedrate",
+    "session_id",      # agent start: part counters restart at 0 with a new one
 )
 # A change in any of these is written immediately.
 CHANGE_FIELDS = (
