@@ -30,8 +30,12 @@ sudo apt install -y python3-pip python3-venv libegl1 libgl1 libxkbcommon0 libfon
 git clone https://github.com/ajitesh1020/linuxcnc-status-monitor.git
 git clone https://github.com/ajitesh1020/floorwatch.git            # needs access to the repo
 cd floorwatch && git switch fix/review-f02-f03-f07                  # until PR #25 is merged
-python3 -m venv ~/fw-venv && ~/fw-venv/bin/pip install -r requirements.txt
+python3 -m venv ~/fw-venv && ~/fw-venv/bin/pip install -r requirements.txt -c constraints-release.txt
 ```
+
+Use the release constraints (PySide6 6.11.2): PySide6 6.12.0, which a bare
+`pip install` picks, crashed FloorWatch here within a minute
+(`Fatal Python error: none_dealloc` while painting a tile).
 
 Point the real agent at this PC only, so its packets do not also go to the
 office: in `~/linuxcnc-monitor-agent/config.yaml` set `monitor_pc_ip: "127.0.0.1"`,
@@ -122,7 +126,7 @@ Use a fresh `--dir` for both tools in each scenario (`run2`, `fleet2`, …).
 
 | Scenario | Date | Machines | Result of `check` | Notes (FloorWatch log warnings, gaps, CPU) |
 |---|---|---|---|---|
-| A | | | | |
+| A | 21–22 Oct 2026 | 99 sim, 60 min + 180 s, defaults, seed 1 | **99 of 99 exact** — parts 6938/6938, aborts 579/579, E-stops 192/192, cmd fail 95/95, joint 31/31; sender 301907 sent, 0 dropped, 0 swapped | 0 `history_gaps`; no warnings in FloorWatch log. Short run first (20 sim, 5 min, busy rates): 20 of 20 exact after the fleet_sim fix below |
 | B | | | | |
 | C | | | | |
 | D | | | | |
@@ -133,7 +137,7 @@ Use a fresh `--dir` for both tools in each scenario (`run2`, `fleet2`, …).
 | I | | | | |
 | J | | | | |
 | K | | | | |
-| L | | | | |
+| L | 21–22 Oct 2026 | = run A (99 sim, 1 h) | `soak_report`: PASSED (memory, CPU, handles, threads within §12) | Indicative only (Linux, not the Windows reference PC): RSS 150 → 213 MB, CPU ~4 % of one core, 19–23 handles, 6 threads, DB 35 MB/h. fleet_sim ~25 % of one core. Real agent idle (LinuxCNC not running) |
 
 LinuxCNC version: · PC: · FloorWatch commit: · agent commit:
 

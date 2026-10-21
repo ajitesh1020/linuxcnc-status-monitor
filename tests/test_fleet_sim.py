@@ -102,5 +102,37 @@ class FleetSimTests(unittest.TestCase):
             self.assertEqual(fleet_sim.main(["check", "--truth", truth_path, "--db", db]), 1)
 
 
+    def test_every_counted_fault_is_visible(self):
+        # A new E-stop / joint fault starting on the very sample the previous one
+        # ends would merge into one fault no packet can show; truth must not count it.
+        import argparse
+        import random
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(tmp.cleanup)
+        args = argparse.Namespace(
+            prefix="SIM-", dir=tmp.name, journal_interval=10.0, journal_base_port=0,
+            journal_host="127.0.0.1", poll=1.0, heartbeat=30.0, gcode_resend=60.0,
+            cycle="20,60", idle="3,15", abort_prob=0.0, estop_rate=1e6,
+            joint_fault_rate=1e6, cmd_error_rate=0.0, restart_rate=0.0)
+        sender = fleet_sim.Sender(("127.0.0.1", _free_port()), 0.0, 0.0, random.Random(1))
+        self.addCleanup(sender.sock.close)
+        m = fleet_sim.SimMachine(0, args, random.Random(7), sender, None)
+        self.addCleanup(m.close)
+        estop_edges, joint_edges = 0, [0] * fleet_sim.JOINTS
+        prev = m._signature(0.0)
+        now = 0.0
+        for _ in range(3000):
+            now += 0.1
+            m.step(now, 0.1, quiet=False)
+            sig = m._signature(now)
+            estop_edges += sig[0] and not prev[0]
+            for j, (fault, _) in enumerate(sig[3]):
+                joint_edges[j] += fault and not prev[3][j][0]
+            prev = sig
+        self.assertGreater(m.truth["estops"], 20)
+        self.assertEqual(m.truth["estops"], estop_edges)
+        self.assertEqual(m.truth["joint_faults"], joint_edges)
+
+
 if __name__ == "__main__":
     unittest.main()

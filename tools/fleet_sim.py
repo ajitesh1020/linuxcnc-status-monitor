@@ -142,6 +142,11 @@ class SimMachine:
         self.last_cycle_ms = 0
         self.estop_until = 0.0
         self.joint_until = [0.0] * JOINTS
+        # Fault flags as of the last step. A new E-stop / joint fault may only
+        # start once the end of the previous one has been sampled; otherwise two
+        # faults merge into one that no packet can tell apart, and truth over-counts.
+        self.estop_was = False
+        self.joint_was = [False] * JOINTS
         self.cmd_state = RCS_DONE
         self.cmd_clear_at = 0.0
         self.again_at: Optional[float] = None
@@ -172,7 +177,7 @@ class SimMachine:
         if not quiet and self.state == "IDLE" and not estop and self._chance(a.restart_rate, dt):
             self._new_session(now)            # agent restarted: new session, counters at 0
             return
-        if not quiet and not estop and self._chance(a.estop_rate, dt):
+        if not quiet and not estop and not self.estop_was and self._chance(a.estop_rate, dt):
             self.estop_until = now + rng.uniform(0.3, 3.0)
             self.truth["estops"] += 1
             estop = True
@@ -182,7 +187,7 @@ class SimMachine:
         if not quiet and idle_ok and self.cmd_state != RCS_ERROR:
             if self._chance(a.joint_fault_rate, dt):
                 j = rng.randrange(JOINTS)
-                if now >= self.joint_until[j]:
+                if now >= self.joint_until[j] and not self.joint_was[j]:
                     self.joint_until[j] = now + rng.uniform(0.2, 2.0)
                     self.truth["joint_faults"][j] += 1
             if self._chance(a.cmd_error_rate, dt):
@@ -219,6 +224,8 @@ class SimMachine:
                 self.state = "IDLE"
                 self.cmd_state = RCS_DONE
                 self.next_start = now + rng.uniform(*_span(a.idle))
+        self.estop_was = now < self.estop_until
+        self.joint_was = [now < t for t in self.joint_until]
 
     # -- packets -------------------------------------------------------------
     def _signature(self, now: float) -> Tuple:
