@@ -66,14 +66,17 @@ JOURNAL_FIELDS = (
     "run_from_here_count", "partial_parts", "partial_part_equiv",
     "last_partial_pct", "last_cycle_ms", "last_abort_ms", "avg_cycle_ms",
     "program_progress_pct", "part_in_progress", "is_run_from_here",
-    "exec_state", "estop", "task_state", "task_mode", "motion_line",
+    "exec_state", "cmd_state", "cmd_serial",
+    "estop", "task_state", "task_mode", "motion_line",
     "file_name", "wcs", "tool_in_spindle", "feedrate",
+    "session_id",      # agent start: part counters restart at 0 with a new one
 )
 # A change in any of these is written immediately.
 CHANGE_FIELDS = (
     "cycle_state", "parts_produced", "abort_count", "partial_parts",
     "exec_state", "estop", "task_state", "file_name",
 )
+RCS_ERROR = 3   # cmd_state of a failed command
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -102,8 +105,11 @@ def compact(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _change_key(c: Dict[str, Any]) -> Tuple:
+    # cmd_state / cmd_serial change with every command (jogs, override
+    # moves...); only a failed command, and its clearing, is written at once.
+    failed = c.get("cmd_serial") if c.get("cmd_state") == RCS_ERROR else None
     return (tuple(c.get(k) for k in CHANGE_FIELDS)
-            + (json.dumps(c.get("joints"), sort_keys=True),))
+            + (json.dumps(c.get("joints"), sort_keys=True), failed))
 
 
 def _open(path: str) -> sqlite3.Connection:

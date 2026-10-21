@@ -57,6 +57,7 @@ def make_fake_linuxcnc(sc):
     mod = types.ModuleType("linuxcnc")
     mod.INTERP_IDLE, mod.INTERP_READING, mod.INTERP_PAUSED = 1, 2, 3
     mod.EXEC_ERROR = 1
+    mod.RCS_ERROR = 3
 
     class stat:
         def poll(self):
@@ -65,6 +66,7 @@ def make_fake_linuxcnc(sc):
                 sc.status._shutdown_requested = True
             self.task_state, self.task_mode, self.interp_state = 4, 1, 1
             self.exec_state, self.estop, self.paused = 2, False, False
+            self.state, self.echo_serial_number = 1, 10    # RCS_DONE
             self.enabled = True
             self.joints = 2
             self.joint = [{"fault": False, "homed": True},
@@ -175,6 +177,26 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual(len(packets), 3)                  # first idle packet, set, clear
         self.assertEqual([e["exec_state"] for e in journal][-2:], [1, 2])
 
+    def test_idle_failed_mdi_commands_each_sent_and_journalled(self):
+        # Two G-code errors in a row while idle (EXEC_ERROR is never set; only
+        # stat.state goes to RCS_ERROR), then a good command clears it.
+        sc, packets, journal = self.run_agent([
+            (8.0, 9.0, "state", 3),
+            (8.0, 8.5, "echo_serial_number", 11),
+            (8.5, 9.0, "echo_serial_number", 12),
+            (9.0, 99.0, "echo_serial_number", 13),
+        ])
+        self.assertEqual([(p["cmd_state"], p["cmd_serial"]) for p in packets],
+                         [(1, 10), (3, 11), (3, 12), (1, 13)])
+        self.assertEqual([(e["cmd_state"], e["cmd_serial"]) for e in journal][-3:],
+                         [(3, 11), (3, 12), (1, 13)])
+
+    def test_successful_commands_while_idle_send_nothing_extra(self):
+        sc, packets, _ = self.run_agent([(5.0, 99.0, "echo_serial_number", 11),
+                                         (5.0, 5.2, "state", 2),
+                                         (9.0, 99.0, "echo_serial_number", 12)])
+        self.assertEqual(len(packets), 1)                  # just the first idle packet
+
     def test_idle_joint_fault_and_estop_edges(self):
         sc, packets, journal = self.run_agent(
             [(6.0, 6.5, "joint_fault", 1), (12.0, 13.0, "estop", True)])
@@ -183,6 +205,17 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual(faults, [False, True, False, False, False])
         self.assertEqual(estops, [False, False, False, True, False])
         self.assertEqual(len(journal), 5)
+
+    def test_packets_carry_session_and_increasing_packet_seq(self):
+        _, first, journal = self.run_agent([(6.0, 6.5, "exec_state", 1)])
+        sessions = {p["session_id"] for p in first}
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual([p["packet_seq"] for p in first], list(range(1, len(first) + 1)))
+        self.assertEqual({e["session_id"] for e in journal}, sessions)
+        # A restarted agent is a new session (its part counters start again at 0).
+        _, second, _ = self.run_agent([])
+        self.assertNotEqual({p["session_id"] for p in second}, sessions)
+        self.assertEqual(second[0]["packet_seq"], 1)
 
     def test_quiet_idle_machine_sends_only_heartbeats(self):
         sc, packets, _ = self.run_agent([], stop_at=65.0)

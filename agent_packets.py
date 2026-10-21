@@ -15,9 +15,9 @@ quiet and sends a heartbeat every idle_heartbeat_interval_s (30 s).
 
 A packet goes out at once, whatever the cadence, when:
   * the cycle state changes (IDLE / RUNNING / PAUSED), or
-  * the fault picture changes: E-stop, machine on/off, EXEC_ERROR, a joint
-    fault or a hard limit (see fault_signature()). This is checked on every
-    sample, so a fault that sets and clears between two status packets, or
+  * the fault picture changes: E-stop, machine on/off, EXEC_ERROR, a failed
+    command, a joint fault or a hard limit (see fault_signature()). This is
+    checked on every sample, so a fault that sets and clears between two status packets, or
     while idle, still reaches the dashboard and the journal, both edges.
 
 All of this reads only the stat channel. Nothing here touches the NML error
@@ -29,6 +29,7 @@ Pure logic with no LinuxCNC import, so it is unit-tested on any PC.
 from typing import Any, Optional, Tuple
 
 EXEC_ERROR = 1   # linuxcnc.EXEC_ERROR
+RCS_ERROR = 3    # linuxcnc.RCS_ERROR: stat.state after a command failed
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -38,10 +39,16 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
         return default
 
 
-def fault_signature(stat: Any, exec_error: int = EXEC_ERROR) -> Tuple:
+def fault_signature(stat: Any, exec_error: int = EXEC_ERROR,
+                    rcs_error: int = RCS_ERROR) -> Tuple:
     """The fault-relevant part of a polled linuxcnc.stat, as a comparable tuple.
 
     Read-only: uses status flags only and never consumes anything.
+
+    A G-code error in MDI does not set EXEC_ERROR (LinuxCNC 2.9 goes straight
+    back to EXEC_DONE), but stat.state stays RCS_ERROR until the next command
+    succeeds. The command serial is included while in error, so each failed
+    command is its own edge, even two in a row.
     """
     joints = []
     try:
@@ -59,6 +66,8 @@ def fault_signature(stat: Any, exec_error: int = EXEC_ERROR) -> Tuple:
         _get(stat, "task_state", 0),
         _get(stat, "exec_state", 0) == exec_error,
         tuple(joints),
+        _get(stat, "echo_serial_number", None)
+        if _get(stat, "state", 0) == rcs_error else None,
     )
 
 

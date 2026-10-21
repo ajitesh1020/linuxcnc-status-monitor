@@ -60,6 +60,22 @@ class JournalTests(unittest.TestCase):
                                        now=13.5), 5)
         self.assertEqual(self.j.last_seq, 5)
 
+    def test_failed_commands_written_at_once_other_commands_not(self):
+        self.assertEqual(self.j.record(_pkt(1000, cmd_state=1, cmd_serial=10), now=0), 1)
+        # A successful command (new serial, passing through RCS_EXEC) waits.
+        self.assertIsNone(self.j.record(_pkt(2000, cmd_state=2, cmd_serial=11), now=1))
+        self.assertIsNone(self.j.record(_pkt(3000, cmd_state=1, cmd_serial=11), now=2))
+        # Two failed commands in a row, then a good one: three writes.
+        self.assertEqual(self.j.record(_pkt(4000, cmd_state=3, cmd_serial=12), now=3), 2)
+        self.assertEqual(self.j.record(_pkt(5000, cmd_state=3, cmd_serial=13), now=4), 3)
+        self.assertEqual(self.j.record(_pkt(6000, cmd_state=1, cmd_serial=14), now=5), 4)
+        conn = aj._open(self.path)
+        self.addCleanup(conn.close)
+        r = aj.build_reply(conn, {"type": "journal_request", "from_seq": 0},
+                           "CNC-01", self.j.agent_id)
+        self.assertEqual([(e[2]["cmd_state"], e[2]["cmd_serial"]) for e in r["entries"]],
+                         [(1, 10), (3, 12), (3, 13), (1, 14)])
+
     def test_prune_old_entries(self):
         now_ms = int(time.time() * 1000)
         self.j.record(_pkt(now_ms - 20 * 86_400_000), now=0)

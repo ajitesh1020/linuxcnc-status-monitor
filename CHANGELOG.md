@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.6.0]
 
+### Added
+
+- **Stream identity** (for review finding F02): every status packet carries
+  `session_id` (new on each agent start; the part counters restart with it) and
+  `packet_seq` (counts packets within the session). A dashboard can then drop a
+  delayed or reordered packet, and tell a restart from a lower count, whatever the
+  wall clock does. `session_id` is journalled too. See PROTOCOL.md §4.1b.
+
 ### Changed
 
 - **The NML error channel is no longer read by default** (review F01). Reading it
@@ -17,6 +25,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **G-code errors reach the dashboard** (found on the bench test, F01). With the
+  error channel no longer read, a failed MDI command (G-code error, unknown
+  M-code, zero feed) left no trace in the packets: LinuxCNC 2.9 never sets
+  `exec_state` to EXEC_ERROR for it. Status packets now carry `cmd_state`
+  (`stat.state`; `3` = the last command failed) and `cmd_serial`
+  (`stat.echo_serial_number`). Each failed command is a fault edge: sent at
+  once, also while idle, and journalled. Successful commands (jogs, override
+  moves) do not trigger extra packets or journal writes. Read-only; the GUI
+  still shows every message.
 - **Faults while idle are sent at once** (review F04). The fault flags are compared
   on every sample (0.1 s); any change sends a status packet immediately, even
   while idle, and is journalled. Before, an idle fault could wait up to 30 s for

@@ -99,6 +99,22 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `journal_seq` | integer | Seq of the newest journal entry at send time |
 | `journal_port` | integer | UDP port that answers history requests (§5a); `0` = not available (off, or the history server stopped — agent ≥ 1.6.0 restarts it within a minute) |
 
+### 4.1b Stream identity (agent ≥ 1.6.0)
+
+| Field | Type | Description |
+|---|---|---|
+| `session_id` | string | Random id made each time the agent starts. The part / abort counters start again at 0 with a new one |
+| `packet_seq` | integer | Counts status packets within a session, from 1 |
+
+A receiver orders a machine's packets by (`session_id`, `packet_seq`), not by
+`ts`: UDP may deliver a packet late or out of order, and the machine's clock can
+be set back. A packet whose `packet_seq` is not higher than the last one accepted
+in its session, or that comes from a session already replaced, is stale and is
+dropped. A counter that goes down **within** a session is not a restart; a new
+`session_id` is. (Agents without these fields: order by `ts`, treating a packet up
+to ~10 s older than the newest as a delayed copy.) `session_id` is also stored in
+journal entries, so replayed history shows restarts too.
+
 ### 4.2 Machine state
 
 | Field | Type | Description |
@@ -106,7 +122,9 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `task_state` | integer | `1`=ESTOP `2`=ESTOP_RESET `3`=OFF `4`=ON |
 | `task_mode` | integer | `1`=MANUAL `2`=AUTO `3`=MDI |
 | `interp_state` | integer | LinuxCNC interpreter-state enum |
-| `exec_state` | integer | LinuxCNC exec-state enum. **`1` = EXEC_ERROR** — reliable error indicator (see §7) |
+| `exec_state` | integer | LinuxCNC exec-state enum. `1` = EXEC_ERROR. Not set by a G-code error in MDI — use `cmd_state` (see §7) |
+| `cmd_state` | integer | Result of the last command (`stat.state`): `1`=DONE `2`=EXEC `3`=**ERROR** — a command failed (G-code error, unknown M-code…); stays `3` until the next command succeeds. Agent ≥ 1.6.0 |
+| `cmd_serial` | integer | Serial of the last command (`stat.echo_serial_number`). Changes with every command; a new value with `cmd_state == 3` is a new error. Agent ≥ 1.6.0 |
 | `estop` | boolean | `true` if in E-stop |
 | `enabled` | boolean | `true` if drives are powered |
 | `paused` | boolean | `true` if feed hold is active |
@@ -190,7 +208,7 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 Agent ≥ 1.6.0: always `[]` unless `read_error_channel: true` is set on the
 agent, because reading the NML queue removes messages before the operator's
 GUI shows them (see §7). Do not rely on `nml_errors` for error detection; use
-`exec_state == 1`, `estop`, `task_state` and the joint flags.
+`cmd_state == 3`, `exec_state == 1`, `estop`, `task_state` and the joint flags.
 
 ---
 
@@ -266,6 +284,15 @@ the request's source address and port.
 | `more` | `true` → ask again with `from_seq` = the last seq received |
 | `first_seq` | Oldest seq still kept — anything below it was pruned |
 
+**Finding what is missing.** Every journal entry is written from a status packet
+that carries its seq in `journal_seq`, so consecutive packets from one agent
+differ by 0 or 1. A step of more than 1 means packets carrying journal entries
+were lost, however short the outage: fetch `(last seq held, journal_seq]`.
+Keep the position saved per machine as a *committed watermark* — move it past a
+range only once that range is stored — so a failed fetch is retried rather than
+skipped. If `first_seq` is above the range's start, those entries were pruned:
+record that span as unrecoverable history and carry on from `first_seq`.
+
 Replies are ~16 KB at most. Requests are read-only and rate-limited; they
 cannot change anything on the machine. Treat `ts_ms` as the time of the data.
 
@@ -296,11 +323,18 @@ So since 1.6.0 the agent does **not** open the error channel unless
 
 - `nml_errors` is `[]` by default. With `read_error_channel: true` it carries the
   messages the agent read — and the operator's GUI may then miss them.
-- Use **`exec_state == 1` (EXEC_ERROR)** as the reliable, non-consuming
-  error-condition indicator in the dashboard.
+- A **failed command** (G-code error, unknown M-code, zero feed…) shows as
+  **`cmd_state == 3`** (RCS_ERROR). It stays `3` until the next command
+  succeeds; each new `cmd_serial` while `cmd_state == 3` is one more error.
+  Nothing is consumed, so the GUI still shows the message. The message text
+  itself is not available without the error channel.
+- `exec_state == 1` (EXEC_ERROR) is an error during execution. Do not rely on
+  it alone: on LinuxCNC 2.9 a G-code error in MDI never sets it (exec_state
+  goes from waiting straight back to done).
 - `estop == true` and `task_state == 1` indicate an E-stop condition.
 - **Fault edges are immediate** (agent ≥ 1.6.0): the agent compares `estop`,
-  `task_state`, EXEC_ERROR and each joint's `fault` / `hard_limit` on every
+  `task_state`, EXEC_ERROR, a failed command (`cmd_state` / `cmd_serial`) and
+  each joint's `fault` / `hard_limit` on every
   sample (default 0.1 s) and sends a status packet at once when any of them
   changes, also while idle; the journal records both edges. A fault shorter
   than one sample can still be missed.
@@ -333,3 +367,5 @@ VPN or equivalent.
 | 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
+| 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
+| 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

@@ -106,6 +106,7 @@ import signal
 import socket
 import sys
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 try:
@@ -609,6 +610,11 @@ def _collect_machine_status(stat: linuxcnc.stat) -> Dict[str, Any]:
         "task_mode":       _safe_get(stat, "task_mode",     0),
         "interp_state":    _safe_get(stat, "interp_state",  0),
         "exec_state":      _safe_get(stat, "exec_state",    0),
+        # Result of the last command: 3 = RCS_ERROR (it failed, e.g. a G-code
+        # error), until the next command succeeds. cmd_serial changes with
+        # every command, so two failures in a row are two errors.
+        "cmd_state":       _safe_get(stat, "state",         0),
+        "cmd_serial":      _safe_get(stat, "echo_serial_number", 0),
         "estop":           bool(_safe_get(stat, "estop",    True)),
         "enabled":         bool(_safe_get(stat, "enabled",  False)),
         "paused":          bool(_safe_get(stat, "paused",   False)),
@@ -785,6 +791,12 @@ def main() -> None:
         gcode_sender.reset()
 
     gate                             = PacketGate(poll_interval_s, idle_heartbeat_interval_s)
+    # Stream identity for the dashboard (PROTOCOL.md §4.1b): a new session_id on
+    # every agent start (the part counters restart at 0 with it), and packet_seq
+    # counting status packets within it, so a delayed or reordered packet can be
+    # told apart from a newer one whatever the wall clock does.
+    session_id:              str   = uuid.uuid4().hex[:16]
+    packet_seq:              int   = 0
     last_sample_time:        float = 0.0
     pending_nml_errors:      list  = []
     consecutive_poll_errors: int   = 0
@@ -867,7 +879,8 @@ def main() -> None:
         # ------------------------------------------------------------------
         try:
             fault_sig = fault_signature(stat_channel,
-                                        getattr(linuxcnc, "EXEC_ERROR", 1))
+                                        getattr(linuxcnc, "EXEC_ERROR", 1),
+                                        getattr(linuxcnc, "RCS_ERROR", 3))
         except Exception as exc:
             logger.debug("Fault signature error: %s", exc)
             fault_sig = None
@@ -915,12 +928,15 @@ def main() -> None:
         # ------------------------------------------------------------------
         try:
             snap: CycleSnapshot = calculator.snapshot()
+            packet_seq += 1
 
             payload: Dict[str, Any] = {
                 "type":         "status",
                 "proto":        PROTOCOL_VERSION,
                 "ts":           int(time.time_ns() // 1_000_000),
                 "machine_name": machine_name,
+                "session_id":   session_id,
+                "packet_seq":   packet_seq,
 
                 # Cycle & production
                 "cycle_state":              current_cycle_state,
@@ -960,8 +976,9 @@ def main() -> None:
                 **_collect_file_meta(stat_channel),
 
                 # NML message text — always [] unless read_error_channel is on.
-                # Faults are reported by exec_state (1 = EXEC_ERROR), estop,
-                # task_state and the joint fault / hard_limit flags.
+                # Faults are reported by exec_state (1 = EXEC_ERROR), cmd_state
+                # (3 = a command failed), estop, task_state and the joint
+                # fault / hard_limit flags.
                 "nml_errors": pending_nml_errors.copy(),
             }
             pending_nml_errors.clear()
