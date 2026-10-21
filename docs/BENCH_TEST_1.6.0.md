@@ -98,14 +98,18 @@ for raw in [b'{"type":"journal_request","from_seq":1e309}',
             b'{"type":"journal_request","from_seq":99999999999999999999999}',
             b'[' * 3000 + b']' * 1000, b'\xff\xfe']:
     s.sendto(raw, ("127.0.0.1", 5006))
-s.sendto(json.dumps({"type": "journal_request", "from_seq": 0, "to_seq": 3}).encode(),
-         ("127.0.0.1", 5006))
-print(json.loads(s.recvfrom(65535)[0])["entries"])   # must print entries
+def ask(from_seq, to_seq):
+    s.sendto(json.dumps({"type": "journal_request", "from_seq": from_seq,
+                         "to_seq": to_seq}).encode(), ("127.0.0.1", 5006))
+    return json.loads(s.recvfrom(65535)[0])
+first = ask(0, 0)["first_seq"]           # oldest entry still kept (older ones are pruned)
+print([e[0] for e in ask(first - 1, first + 2)["entries"]])   # must print 3 seqs
 EOF
 ```
 
-Pass: the last request is answered, and the receiver keeps showing
-`journal_port: 5006` (it shows `0` only while the history server is down).
+Pass: the good requests are answered (the bad ones get no reply), the last line
+prints three seq numbers, and the receiver keeps showing `journal_port: 5006`
+(it shows `0` only while the history server is down).
 
 ## 5. Stream identity (`session_id`, `packet_seq`)
 
