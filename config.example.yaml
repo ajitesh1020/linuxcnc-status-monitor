@@ -63,6 +63,12 @@ journal_days: 14
 journal_interval_s: 10      # journal at least this often while running
 journal_port: 5006          # UDP port the dashboard asks for history on (0 = off)
 
+# Also read LinuxCNC's NML error channel to send error message text.
+# Leave false: each message read here is REMOVED, so the operator's screen
+# (AXIS, QtDragon, Gmoccapy...) may never show it. E-stop, execution errors,
+# joint faults and limits are reported from status flags either way.
+read_error_channel: false
+
 # Rotating log settings (dev mode only).
 log_max_bytes: 5242880   # 5 MiB
 log_backup_count: 3

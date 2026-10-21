@@ -97,7 +97,7 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 |---|---|---|
 | `agent_id` | string | Id of the agent's journal. Changes only if the journal file is deleted — then seq numbers restart |
 | `journal_seq` | integer | Seq of the newest journal entry at send time |
-| `journal_port` | integer | UDP port that answers history requests (§5a); `0` = not available |
+| `journal_port` | integer | UDP port that answers history requests (§5a); `0` = not available (off, or the history server stopped — agent ≥ 1.6.0 restarts it within a minute) |
 
 ### 4.2 Machine state
 
@@ -187,9 +187,10 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 "nml_errors": [{ "kind": 1, "msg": "Joint 0 following error" }]
 ```
 
-Empty `[]` when nothing was captured. **This channel is best-effort only** — the
-AXIS GUI wins the NML queue race in most cases and consumes the message first
-(see §7). Do not rely on `nml_errors` for error detection; use `exec_state == 1`.
+Agent ≥ 1.6.0: always `[]` unless `read_error_channel: true` is set on the
+agent, because reading the NML queue removes messages before the operator's
+GUI shows them (see §7). Do not rely on `nml_errors` for error detection; use
+`exec_state == 1`, `estop`, `task_state` and the joint flags.
 
 ---
 
@@ -289,13 +290,20 @@ heartbeat) arrives for noticeably longer than `idle_heartbeat_interval_s`
 ## 7. Error semantics
 
 The LinuxCNC NML error channel is a **queue**: the first reader to `poll()` an
-error **deletes it** for everyone else. The agent deliberately yields this race
-to the AXIS GUI so the operator at the machine always sees the error. Therefore:
+error **deletes it** for everyone else, and LinuxCNC recommends a single reader.
+So since 1.6.0 the agent does **not** open the error channel unless
+`read_error_channel: true` is set. Therefore:
 
-- `nml_errors` is a **bonus**, not a guarantee — `[]` is normal even during a fault.
+- `nml_errors` is `[]` by default. With `read_error_channel: true` it carries the
+  messages the agent read — and the operator's GUI may then miss them.
 - Use **`exec_state == 1` (EXEC_ERROR)** as the reliable, non-consuming
   error-condition indicator in the dashboard.
 - `estop == true` and `task_state == 1` indicate an E-stop condition.
+- **Fault edges are immediate** (agent ≥ 1.6.0): the agent compares `estop`,
+  `task_state`, EXEC_ERROR and each joint's `fault` / `hard_limit` on every
+  sample (default 0.1 s) and sends a status packet at once when any of them
+  changes, also while idle; the journal records both edges. A fault shorter
+  than one sample can still be missed.
 
 ---
 
@@ -324,3 +332,4 @@ VPN or equivalent.
 | 1 | 2026-09 | Additive: `partial_parts`, `partial_part_equiv`, `last_partial_pct`, `program_progress_pct`, `part_in_progress`, `gcode_tail_line`, per-joint `hard_limit`. `gcode_end_line` now points at M2/M30 rather than a trailing `%`. No version bump. |
 | 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
+| 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |

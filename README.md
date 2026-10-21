@@ -2,10 +2,13 @@
 
 A real-time, read-only status monitor for [LinuxCNC](https://linuxcnc.org/) machines.
 Streams machine state, axis positions, spindle, cycle times, part counts and
-errors over UDP — with **zero changes to your G-code** and zero risk to the
-running CNC process.
+errors over UDP — with **zero changes to your G-code**. The agent only reads
+LinuxCNC status: it sends no commands, writes no HAL pins and, by default, does
+not read the NML error channel (so the operator's screen keeps every message).
+It is a monitoring tool, not part of machine control or safety. Test it on
+your own machine (latency, GUI messages) before production use.
 
-**Version: 1.4.0**
+**Version: 1.6.0**
 
 ---
 
@@ -113,9 +116,11 @@ so nothing needs to change when the office PC's address changes.
 - **Idle suppression** — one heartbeat every 30 s while idle
 - **G-code file streaming** — full program sent once on load, again on change
 - **Cycle time tracking** — millisecond precision, pause-aware
-- **Errors** — E-stop, execution errors, joint faults, hard limits, and any NML
-  messages the agent catches
-- **Fault-tolerant** — every LinuxCNC call guarded; the agent can never crash LinuxCNC
+- **Errors** — E-stop, machine on/off, execution errors, joint faults and hard
+  limits, read from status flags on every sample and sent at once, even while idle.
+  NML message text only with `read_error_channel: true` (see CONFIGURATION.md)
+- **Fault-tolerant** — every LinuxCNC call guarded; a separate process that only
+  reads status
 
 ---
 

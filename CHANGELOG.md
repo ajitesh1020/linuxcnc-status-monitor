@@ -4,10 +4,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [1.6.0]
+
+### Changed
+
+- **The NML error channel is no longer read by default** (review F01). Reading it
+  removes each message from LinuxCNC's queue, so the agent could take an error
+  before the operator's GUI showed it. `nml_errors` is now `[]` unless the new
+  `read_error_channel: true` is set. Faults are reported from status flags
+  (`exec_state`, `estop`, `task_state`, joint `fault` / `hard_limit`), which
+  nothing consumes. README no longer claims "zero risk".
 
 ### Fixed
 
+- **Faults while idle are sent at once** (review F04). The fault flags are compared
+  on every sample (0.1 s); any change sends a status packet immediately, even
+  while idle, and is journalled. Before, an idle fault could wait up to 30 s for
+  the heartbeat, and one that cleared in between was in neither the live stream
+  nor the journal. New `agent_packets.py`.
+- **A malformed history request can no longer stop the history server** (review
+  F06). `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1; `1e309`, NaN,
+  fractions, booleans and numbers too big for SQLite are rejected (they raised
+  `OverflowError`, which ended the server thread). Every request is handled in its
+  own catch-all (bad UTF-8, deep JSON nesting...). Status packets report
+  `journal_port: 0` while the server is down, and the agent restarts it within
+  60 s. `lcnc-status-agent --check` shows the error-channel and history settings.
 - **The loaded program now reaches the dashboard (live toolpath).** It used to be sent
   once, in chunks of up to 50,000 characters. Such a datagram is cut into dozens of IP
   fragments, so losing any one lost the whole chunk, and a chunk could pass the UDP size

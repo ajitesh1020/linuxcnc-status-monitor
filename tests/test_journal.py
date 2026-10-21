@@ -100,8 +100,107 @@ class JournalTests(unittest.TestCase):
                                                 "from_seq": "x"}, "M", "a"))
         conn.close()
 
+    def test_malformed_sequence_numbers_are_rejected_not_raised(self):
+        # Review finding F06: JSON 1e309 parses as infinity; int(inf) raised
+        # OverflowError, which nothing caught, and stopped the server thread.
+        self._fill(5)
+        conn = aj._open(self.path)
+        bad = [float("inf"), float("-inf"), float("nan"), 1e309, 2.5, -1, True,
+               2 ** 63, 10 ** 30, "1e309", "-3", "9" * 21, [], {}]
+        for value in bad:
+            for field in ("from_seq", "to_seq"):
+                with self.subTest(field=field, value=value):
+                    req = {"type": "journal_request", field: value}
+                    self.assertIsNone(aj.build_reply(conn, req, "M", "a"))
+        self.assertIsNone(aj.build_reply(conn, {"type": "journal_request",
+                                                "from_seq": None}, "M", "a"))
+        self.assertIsNone(aj.build_reply(conn, ["journal_request"], "M", "a"))
+        conn.close()
+
+    def test_accepted_sequence_number_forms(self):
+        self._fill(5)
+        conn = aj._open(self.path)
+        for value in (2, 2.0, "2", " 2 "):
+            with self.subTest(value=value):
+                r = aj.build_reply(conn, {"type": "journal_request", "from_seq": value},
+                                   "M", "a")
+                self.assertEqual([e[0] for e in r["entries"]], [3, 4, 5])
+        r = aj.build_reply(conn, {"type": "journal_request", "from_seq": 0,
+                                  "to_seq": aj.MAX_SEQ}, "M", "a")
+        self.assertEqual(len(r["entries"]), 5)
+        conn.close()
+
+
+def _free_port():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
 
 class JournalServerTests(unittest.TestCase):
+    def _serve(self, n=5):
+        # Cleanups run last-in first-out: server and journal close before the
+        # folder is removed (Windows will not delete an open database).
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "j.db")
+        j = aj.Journal(path)
+        for i in range(1, n + 1):
+            j.record(_pkt(i * 1000, parts_produced=i), now=i)
+        port = _free_port()
+        srv = aj.JournalServer(path, port, "CNC-01", j.agent_id, bind_host="127.0.0.1")
+        self.assertTrue(srv.start())
+        self.addCleanup(j.close)
+        self.addCleanup(srv.stop)
+        return srv, port
+
+    @staticmethod
+    def _ask(port, raw, timeout=3.0):
+        c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        c.settimeout(timeout)
+        try:
+            c.sendto(raw, ("127.0.0.1", port))
+            return json.loads(c.recvfrom(65535)[0])
+        except socket.timeout:
+            return None
+        finally:
+            c.close()
+
+    def test_server_survives_malformed_requests(self):
+        srv, port = self._serve()
+        junk = [b'{"type":"journal_request","from_seq":1e309}',
+                b'{"type":"journal_request","from_seq":-1e309}',
+                b'{"type":"journal_request","to_seq":1e309}',
+                b'{"type":"journal_request","from_seq":99999999999999999999999}',
+                b'{"type":"journal_request","from_seq":NaN}',
+                b"[" * 3000 + b"]" * 1000,          # deep nesting: RecursionError
+                b"\xff\xfe not utf-8", b"", b"null", b"42", b'"x"']
+        for raw in junk:
+            self.assertIsNone(self._ask(port, raw, timeout=0.3), raw[:40])
+        self.assertTrue(srv.alive)
+        self.assertGreaterEqual(srv.bad_requests, len(junk) - 1)  # b"" may not arrive
+        reply = self._ask(port, json.dumps({"type": "journal_request",
+                                            "from_seq": 3}).encode())
+        self.assertEqual([e[0] for e in reply["entries"]], [4, 5])
+
+    def test_alive_and_restart_after_the_thread_stops(self):
+        srv, port = self._serve()
+        self.assertTrue(srv.alive)
+        srv.stop()
+        self.assertFalse(srv.alive)
+        self.assertTrue(srv.start())
+        self.assertTrue(srv.alive)
+        reply = self._ask(port, json.dumps({"type": "journal_request",
+                                            "from_seq": 4}).encode())
+        self.assertEqual([e[0] for e in reply["entries"]], [5])
+
+    def test_port_zero_means_off(self):
+        srv = aj.JournalServer("unused.db", 0, "M", "a")
+        self.assertFalse(srv.start())
+        self.assertFalse(srv.alive)
+
     def test_round_trip_over_udp(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "j.db")
