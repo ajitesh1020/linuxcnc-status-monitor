@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **`loop_lag_ms`** in status packets (MES plan P2.7; PROTOCOL.md §4.10):
+  p50 / p99 / max of how late the sampling loop's samples start, over the last
+  60 s. Tested: a MES worker stuck inside the spool does not raise it.
 - **Agent ↔ MillWright link `agent_mes_link.py`** (MES plan P1.6;
   `mes_millwright_config`). A worker thread copies MillWright's outbox
   (`mw_data/millwright.db`, opened read-only) into the spool in one
