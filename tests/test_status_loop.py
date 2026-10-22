@@ -269,6 +269,18 @@ class StatusLoopTests(unittest.TestCase):
         self.assertRegex(packets[0]["machine_uuid"],
                          r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 
+    def test_mes_off_by_default(self):
+        _, packets, _ = self.run_agent([])
+        self.assertTrue(all(p["mes_spool"] == {"pending": 0, "bytes": 0, "state": "off"} for p in packets))
+        self.assertTrue(all("features" not in p for p in packets))
+
+    def test_mes_spool_state_and_features_when_enabled(self):
+        _, packets, _ = self.run_agent([], mes_enabled=True)
+        for p in packets:
+            self.assertEqual(p["features"], ["mes1"])
+            self.assertEqual((p["mes_spool"]["state"], p["mes_spool"]["pending"]), ("ok", 0))
+            self.assertGreater(p["mes_spool"]["bytes"], 0)
+
     def test_no_machine_uuid_field_if_identity_cannot_be_written(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

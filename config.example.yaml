@@ -79,6 +79,11 @@ journal_allow: ""           # answer only these dashboard IPs, comma list ("" = 
 # machine, then tick "Refuse unsigned machines" in FloorWatch.
 site_key: ""
 
+# MES capture (scans, cycles, MillWright's outbox) into a durable spool,
+# ~/linuxcnc-monitor-agent/mes_spool.db. Off by default: nothing MES runs.
+mes_enabled: false
+mes_spool_mb: 1024          # disk budget; when full, new events are refused, never dropped
+
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen
 # (AXIS, QtDragon, Gmoccapy...) may never show it. E-stop, execution errors,
