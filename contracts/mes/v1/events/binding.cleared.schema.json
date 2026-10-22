@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/binding.cleared",
+  "title": "Bound scans were cleared before a run used them",
+  "type": "object",
+  "required": [
+    "scan_ids",
+    "reason"
+  ],
+  "properties": {
+    "scan_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/uuid"
+      },
+      "maxItems": 64,
+      "uniqueItems": true,
+      "description": "Empty = everything bound at this machine."
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    }
+  }
+}

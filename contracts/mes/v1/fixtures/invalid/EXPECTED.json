@@ -1,0 +1,205 @@
+{
+  "description": "invalid fixture -> an error it must produce. layer: schema = the JSON Schemas reject it; rule = only validate.py rules do; strict = validate.py is stricter than plain JSON Schema; bytes = rejected before decoding.",
+  "expected": {
+    "agent_without_machine_id": {
+      "path": "machine_id",
+      "code": "rule:machine_id_required",
+      "layer": "rule"
+    },
+    "boot_id_with_space": {
+      "path": "clock/boot_id",
+      "code": "pattern",
+      "layer": "schema"
+    },
+    "bound_scan_repeated": {
+      "path": "payload/bound_scan_ids/1",
+      "code": "uniqueItems",
+      "layer": "schema"
+    },
+    "correlation_missing_key": {
+      "path": "correlation/scan_id",
+      "code": "required",
+      "layer": "schema"
+    },
+    "cycle_ends_before_start": {
+      "path": "payload/ended_at",
+      "code": "rule:time_order",
+      "layer": "rule"
+    },
+    "duplicate_key": {
+      "path": "",
+      "code": "rule:duplicate_key",
+      "layer": "bytes"
+    },
+    "execution_without_execution_id": {
+      "path": "correlation/execution_id",
+      "code": "rule:correlation_required",
+      "layer": "rule"
+    },
+    "fixture_position_unknown_scan": {
+      "path": "payload/fixture_positions/A2",
+      "code": "rule:fixture_position",
+      "layer": "rule"
+    },
+    "framing_unknown": {
+      "path": "payload/framing",
+      "code": "enum",
+      "layer": "schema"
+    },
+    "impossible_date": {
+      "path": "occurred_at",
+      "code": "rule:timestamp",
+      "layer": "rule"
+    },
+    "legacy_digest_short": {
+      "path": "payload/legacy_digest",
+      "code": "anyOf",
+      "layer": "schema"
+    },
+    "local_time_not_utc": {
+      "path": "occurred_at",
+      "code": "pattern",
+      "layer": "schema"
+    },
+    "lone_surrogate": {
+      "path": "",
+      "code": "rule:encoding",
+      "layer": "bytes"
+    },
+    "missing_event_id": {
+      "path": "event_id",
+      "code": "required",
+      "layer": "schema"
+    },
+    "missing_payload_field": {
+      "path": "payload/framing",
+      "code": "required",
+      "layer": "schema"
+    },
+    "mode_unknown": {
+      "path": "payload/mode",
+      "code": "enum",
+      "layer": "schema"
+    },
+    "nan_number": {
+      "path": "",
+      "code": "rule:json",
+      "layer": "bytes"
+    },
+    "not_utf8": {
+      "path": "",
+      "code": "rule:encoding",
+      "layer": "bytes"
+    },
+    "offset_axis_unknown": {
+      "path": "payload/offsets/q",
+      "code": "propertyNames",
+      "layer": "schema"
+    },
+    "over_16_kib": {
+      "path": "",
+      "code": "rule:too_large",
+      "layer": "bytes"
+    },
+    "payload_not_object": {
+      "path": "payload",
+      "code": "type",
+      "layer": "schema"
+    },
+    "producer_kind_unknown": {
+      "path": "producer/kind",
+      "code": "enum",
+      "layer": "schema"
+    },
+    "producer_not_allowed": {
+      "path": "producer/kind",
+      "code": "rule:producer",
+      "layer": "rule"
+    },
+    "program_sha256_uppercase": {
+      "path": "payload/program_sha256",
+      "code": "pattern",
+      "layer": "schema"
+    },
+    "raw_bad_base64": {
+      "path": "payload/raw",
+      "code": "rule:raw",
+      "layer": "rule"
+    },
+    "raw_multibyte_over_4096_bytes": {
+      "path": "payload/raw",
+      "code": "rule:raw",
+      "layer": "rule"
+    },
+    "raw_over_4096_bytes": {
+      "path": "payload/raw",
+      "code": "rule:raw",
+      "layer": "rule"
+    },
+    "raw_text_with_group_separator": {
+      "path": "payload/raw",
+      "code": "rule:raw",
+      "layer": "rule"
+    },
+    "scan_without_scan_id": {
+      "path": "correlation/scan_id",
+      "code": "rule:correlation_required",
+      "layer": "rule"
+    },
+    "seconds_negative": {
+      "path": "payload/seconds",
+      "code": "minimum",
+      "layer": "schema"
+    },
+    "seq_boolean": {
+      "path": "producer/seq",
+      "code": "type",
+      "layer": "schema"
+    },
+    "seq_zero": {
+      "path": "producer/seq",
+      "code": "minimum",
+      "layer": "schema"
+    },
+    "too_many_bound_scans": {
+      "path": "payload/bound_scan_ids",
+      "code": "maxItems",
+      "layer": "schema"
+    },
+    "tool_snapshot_no_heads": {
+      "path": "payload/heads",
+      "code": "minItems",
+      "layer": "schema"
+    },
+    "top_level_array": {
+      "path": "",
+      "code": "rule:json",
+      "layer": "bytes"
+    },
+    "unknown_type": {
+      "path": "type",
+      "code": "rule:unknown_type",
+      "layer": "rule"
+    },
+    "uuid_not_version_4": {
+      "path": "machine_id",
+      "code": "anyOf",
+      "layer": "schema"
+    },
+    "uuid_uppercase": {
+      "path": "event_id",
+      "code": "pattern",
+      "layer": "schema"
+    },
+    "wcs_trailing_newline": {
+      "path": "payload/wcs",
+      "code": "rule:trailing_newline",
+      "layer": "strict"
+    },
+    "wrong_contract_version": {
+      "path": "schema",
+      "code": "const",
+      "layer": "schema"
+    }
+  }
+}

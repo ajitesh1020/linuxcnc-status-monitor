@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/scan.rejected_local",
+  "title": "Input from a scanner the agent did not accept as a scan",
+  "type": "object",
+  "required": [
+    "scanner_id",
+    "reason",
+    "partial_len"
+  ],
+  "properties": {
+    "scanner_id": {
+      "$ref": "#/$defs/scanner_id"
+    },
+    "reason": {
+      "enum": [
+        "too_long",
+        "timeout",
+        "control_chars",
+        "disconnected"
+      ]
+    },
+    "partial_len": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048576,
+      "description": "Bytes received before it was rejected (the data itself is not kept)."
+    }
+  },
+  "$defs": {
+    "scanner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[ -~]+$",
+      "description": "Stable scanner name from the agent config (printable ASCII)."
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/program.version",
+  "title": "A program file as it was when a run used it",
+  "type": "object",
+  "required": [
+    "program_path",
+    "sha256",
+    "size",
+    "legacy_digest",
+    "seen_at"
+  ],
+  "properties": {
+    "program_path": {
+      "$ref": "#/$defs/path"
+    },
+    "sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "legacy_digest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "MillWright's older 16-hex digest, for matching old records."
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "seen_at": {
+      "$ref": "#/$defs/timestamp"
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+    }
+  }
+}

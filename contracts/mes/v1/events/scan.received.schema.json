@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/scan.received",
+  "title": "A complete scan read by the agent from a scanner",
+  "type": "object",
+  "required": [
+    "scanner_id",
+    "raw",
+    "raw_encoding",
+    "framing"
+  ],
+  "properties": {
+    "scanner_id": {
+      "$ref": "#/$defs/scanner_id"
+    },
+    "raw": {
+      "type": "string",
+      "maxLength": 5464,
+      "description": "What the scanner sent, at most 4096 bytes: as text when it is valid UTF-8 without control characters, otherwise base64 (raw_encoding)."
+    },
+    "raw_encoding": {
+      "enum": [
+        "utf8",
+        "base64"
+      ]
+    },
+    "symbology": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "description": "Optional: only when the scanner reports it (e.g. AIM ID ]d2)."
+    },
+    "framing": {
+      "enum": [
+        "enter",
+        "tab",
+        "cr",
+        "lf",
+        "crlf",
+        "timeout"
+      ],
+      "description": "What ended the scan."
+    }
+  },
+  "$defs": {
+    "scanner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[ -~]+$",
+      "description": "Stable scanner name from the agent config (printable ASCII)."
+    }
+  }
+}

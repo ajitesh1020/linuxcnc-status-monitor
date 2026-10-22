@@ -1,0 +1,108 @@
+{
+  "contract": "fw.mes.event/1",
+  "description": "Event types in v1: who may produce each, which correlation ids it must carry, and its payload schema. Server-side facts (lookup.resolved, binding.validated/held/rejected, operation.attempt_*, quality.result, hold.*, correction.applied) are produced by the site service only and are added here when Phase 3 defines them.",
+  "max_event_bytes": 16384,
+  "max_raw_scan_bytes": 4096,
+  "types": {
+    "scan.received": {
+      "producers": [
+        "agent"
+      ],
+      "requires": [
+        "scan_id"
+      ],
+      "schema": "events/scan.received.schema.json"
+    },
+    "scan.rejected_local": {
+      "producers": [
+        "agent"
+      ],
+      "requires": [],
+      "schema": "events/scan.rejected_local.schema.json"
+    },
+    "scanner.state": {
+      "producers": [
+        "agent"
+      ],
+      "requires": [],
+      "schema": "events/scanner.state.schema.json"
+    },
+    "operator.session_started": {
+      "producers": [
+        "millwright"
+      ],
+      "requires": [
+        "operator_session_id"
+      ],
+      "schema": "events/operator.session_started.schema.json"
+    },
+    "operator.session_ended": {
+      "producers": [
+        "millwright"
+      ],
+      "requires": [
+        "operator_session_id"
+      ],
+      "schema": "events/operator.session_ended.schema.json"
+    },
+    "execution.started": {
+      "producers": [
+        "millwright",
+        "agent"
+      ],
+      "requires": [
+        "execution_id"
+      ],
+      "schema": "events/execution.started.schema.json"
+    },
+    "execution.ended": {
+      "producers": [
+        "millwright",
+        "agent"
+      ],
+      "requires": [
+        "execution_id"
+      ],
+      "schema": "events/execution.ended.schema.json"
+    },
+    "cycle.observed": {
+      "producers": [
+        "agent"
+      ],
+      "requires": [
+        "execution_id"
+      ],
+      "schema": "events/cycle.observed.schema.json"
+    },
+    "binding.requested": {
+      "producers": [
+        "agent"
+      ],
+      "requires": [],
+      "schema": "events/binding.requested.schema.json"
+    },
+    "binding.cleared": {
+      "producers": [
+        "agent"
+      ],
+      "requires": [],
+      "schema": "events/binding.cleared.schema.json"
+    },
+    "tool.snapshot": {
+      "producers": [
+        "millwright"
+      ],
+      "requires": [
+        "execution_id"
+      ],
+      "schema": "events/tool.snapshot.schema.json"
+    },
+    "program.version": {
+      "producers": [
+        "millwright"
+      ],
+      "requires": [],
+      "schema": "events/program.version.schema.json"
+    }
+  }
+}

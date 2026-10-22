@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/operator.session_ended",
+  "title": "An operator session ended",
+  "type": "object",
+  "required": [
+    "operator_name",
+    "role",
+    "assurance",
+    "reason"
+  ],
+  "properties": {
+    "operator_name": {
+      "$ref": "#/$defs/operator"
+    },
+    "role": {
+      "$ref": "#/$defs/role"
+    },
+    "assurance": {
+      "$ref": "#/$defs/assurance"
+    },
+    "reason": {
+      "enum": [
+        "logout",
+        "idle_timeout",
+        "shutdown",
+        "replaced",
+        "unknown"
+      ]
+    }
+  },
+  "$defs": {
+    "operator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "assurance": {
+      "enum": [
+        "selected_name",
+        "role_password",
+        "named_account"
+      ],
+      "description": "How sure we are who the operator is (plan section 16 D4)."
+    }
+  }
+}

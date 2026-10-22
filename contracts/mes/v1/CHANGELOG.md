@@ -1,0 +1,14 @@
+# fw.mes.event/1 changes
+
+Within v1 only additive changes are allowed: new optional fields, new event
+types, new values in an enum that consumers already treat as "unknown → keep".
+Anything that would make an old event invalid, or change the meaning of a
+field, goes into `contracts/mes/v2/`.
+
+## 1.0 — first version (MES plan P1.1–P1.3)
+
+- Envelope and 12 event types: `scan.received`, `scan.rejected_local`,
+  `scanner.state`, `operator.session_started`, `operator.session_ended`,
+  `execution.started`, `execution.ended`, `cycle.observed`,
+  `binding.requested`, `binding.cleared`, `tool.snapshot`, `program.version`.
+- Standard-library `validate.py`, fixtures and `MANIFEST.sha256`.

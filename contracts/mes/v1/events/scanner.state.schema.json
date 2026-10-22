@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/scanner.state",
+  "title": "A scanner was enrolled, connected, disconnected or failed",
+  "type": "object",
+  "required": [
+    "scanner_id",
+    "state"
+  ],
+  "properties": {
+    "scanner_id": {
+      "$ref": "#/$defs/scanner_id"
+    },
+    "state": {
+      "enum": [
+        "enrolled",
+        "connected",
+        "disconnected",
+        "error"
+      ]
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "usb": {
+      "type": "object",
+      "required": [
+        "vendor_id",
+        "product_id"
+      ],
+      "properties": {
+        "vendor_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{4}$"
+        },
+        "product_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{4}$"
+        },
+        "serial": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    }
+  },
+  "$defs": {
+    "scanner_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[ -~]+$",
+      "description": "Stable scanner name from the agent config (printable ASCII)."
+    }
+  }
+}

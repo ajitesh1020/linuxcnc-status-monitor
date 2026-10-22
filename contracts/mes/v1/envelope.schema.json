@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/envelope",
+  "title": "FloorWatch MES event envelope, version 1",
+  "description": "Every MES event, whoever produces it. The payload is checked separately against events/<type>.schema.json (see catalogue.json). Unknown fields are allowed and ignored by consumers, so producers can add optional fields within v1.",
+  "type": "object",
+  "required": ["schema", "event_id", "type", "producer", "site_id", "machine_id",
+               "occurred_at", "clock", "correlation", "source", "payload"],
+  "properties": {
+    "schema": {"const": "fw.mes.event/1"},
+    "event_id": {"$ref": "#/$defs/uuid"},
+    "type": {"type": "string", "pattern": "^[a-z][a-z_]*\\.[a-z][a-z_]*$", "maxLength": 64},
+    "producer": {
+      "type": "object",
+      "required": ["kind", "id", "epoch", "seq"],
+      "properties": {
+        "kind": {"enum": ["agent", "millwright", "service"]},
+        "id": {"$ref": "#/$defs/uuid"},
+        "epoch": {"$ref": "#/$defs/uuid"},
+        "seq": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
+    "site_id": {"$ref": "#/$defs/uuid_or_null"},
+    "machine_id": {"$ref": "#/$defs/uuid_or_null"},
+    "station_id": {"$ref": "#/$defs/uuid_or_null"},
+    "occurred_at": {"$ref": "#/$defs/timestamp"},
+    "clock": {
+      "type": "object",
+      "required": ["synced", "boot_id", "mono_ms"],
+      "properties": {
+        "synced": {"type": "boolean"},
+        "boot_id": {"type": "string", "minLength": 1, "maxLength": 64,
+                    "pattern": "^[0-9A-Za-z_.:-]+$"},
+        "mono_ms": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "required": ["execution_id", "scan_id", "operator_session_id"],
+      "properties": {
+        "execution_id": {"$ref": "#/$defs/uuid_or_null"},
+        "scan_id": {"$ref": "#/$defs/uuid_or_null"},
+        "operator_session_id": {"$ref": "#/$defs/uuid_or_null"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["app", "version"],
+      "properties": {
+        "app": {"type": "string", "minLength": 1, "maxLength": 64},
+        "version": {"type": "string", "minLength": 1, "maxLength": 32},
+        "record": {"type": "string", "maxLength": 128}
+      }
+    },
+    "payload": {"type": "object"}
+  },
+  "$defs": {
+    "uuid": {
+      "description": "UUID version 4, lowercase, with hyphens (architecture decision A4).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "uuid_or_null": {
+      "anyOf": [{"$ref": "#/$defs/uuid"}, {"type": "null"}]
+    },
+    "timestamp": {
+      "description": "UTC, RFC 3339 with a Z suffix, at most microseconds (decision A11).",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+    }
+  }
+}

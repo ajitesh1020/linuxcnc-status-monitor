@@ -1,0 +1,42 @@
+{
+  "schema": "fw.mes.event/1",
+  "event_id": "e0000000-0000-4000-8000-000000000900",
+  "type": "scanner.state",
+  "producer": {
+    "kind": "agent",
+    "id": "2b3c4d5e-6f70-4182-93a4-b5c6d7e8f901",
+    "epoch": "3c4d5e6f-7081-4293-a4b5-c6d7e8f90112",
+    "seq": 900
+  },
+  "site_id": "5f0c1d2e-8a3b-4c5d-9e6f-0a1b2c3d4e5f",
+  "machine_id": "8d7c6b5a-4f3e-4d2c-8b1a-0f9e8d7c6b5a",
+  "occurred_at": "2026-10-22T09:15:02.123Z",
+  "clock": {
+    "synced": true,
+    "boot_id": "4f1c2a9e7b3d5c60",
+    "mono_ms": 123456789
+  },
+  "correlation": {
+    "execution_id": null,
+    "scan_id": null,
+    "operator_session_id": null
+  },
+  "source": {
+    "app": "linuxcnc-status-agent",
+    "version": "1.7.0",
+    "record": "spool:4"
+  },
+  "payload": {
+    "scanner_id": "line-1-left",
+    "state": "connected",
+    "usb": {
+      "vendor_id": "0c2e",
+      "product_id": "0b61",
+      "serial": "21234B0567"
+    },
+    "future_payload_field": 1
+  },
+  "future_field": {
+    "added": "in a later v1 release"
+  }
+}
