@@ -31,7 +31,7 @@ so far:
 | F02 | Delayed / reordered packets dropped; restarts recognised by `session_id`, ordered by `packet_seq` | agent `main` (PR #12) + FloorWatch PR #25 |
 | F03 | Missed history recovered from any `journal_seq` step; saved position never skips unstored history; failed fetches retried; pruned spans recorded in `history_gaps` | FloorWatch PR #25 |
 | F07 (part) | Implausible part-count jumps not expanded | FloorWatch PR #25 |
-| F05 | G-code programs up to 32 MiB / 65,536 chunks reach the dashboard; a program over the limit is logged once | agent PR #15 + FloorWatch's matching limit |
+| F05 | G-code programs up to 32 MiB of text / 80,000 chunks reach the dashboard (`contracts/gcode/v1.json`); a program over a limit is announced with `gcode_file_refused` and logged once | agent PR #15, then branch `fix/gcode-large-programs` + FloorWatch branch `fix/gcode-large-programs` |
 | F07 | Optional `site_key`: every packet signed (HMAC-SHA256), history requests signed with a fresh nonce; `journal_bind` / `journal_allow` | agent PR #15 (FloorWatch must check `sig`) |
 | Hardening | Journal reopens itself after errors, pauses on low disk; `journal_state` in packets | agent PR #15 |
 | Bench find | G-code errors reported as `cmd_state` 3 / `cmd_serial` (agent) and shown as error events in FloorWatch | agent `main` (PR #12) + FloorWatch PR #25 |
@@ -131,8 +131,8 @@ busy rates as in FLEET_TEST.md §3) to prove the setup, then the full scenarios.
   Work out which part of the chain lost or doubled it and report that.
 - **Known, not a failure**: scenario H — aborts may be 1 short for a machine
   whose first missed entry was an abort; scenario I — the pruned machine is short
-  by what was deleted; scenario K — only programs over 32 MiB / 65,536 chunks are
-  refused (F05), logged once per program; a FloorWatch still on the old
+  by what was deleted; scenario K — only programs over 32 MiB of text / 80,000 chunks
+  are refused (F05): FloorWatch says why, the agent logs it once per program; a FloorWatch still on the old
   4096-chunk limit refuses the 5 MB program.
 - The 30 s outage (F) and long outage (G) are the review's main F03 cases; give
   them extra attention.

@@ -1,0 +1,2 @@
+Vendored from ajitesh1020/floorwatch contracts/gcode/v1.json (canonical copy).
+Update both together; tests/test_gcode_contract.py checks agent_gcode against this file.

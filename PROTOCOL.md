@@ -216,10 +216,15 @@ GUI shows them (see §7). Do not rely on `nml_errors` for error detection; use
 ## 5. G-code file packet (`type: "gcode_file"`)
 
 Sent when a program is loaded, whenever the loaded file changes, and again every
-`gcode_resend_s` seconds (default 60) so a dashboard that started later, or lost a
-packet, still gets it. A receiver that already has the file simply ignores the repeat.
-The file is split so that every packet fits one network frame (at most about 1,400
-bytes), whatever `gcode_chunk_size` is set to (default 1,000 characters).
+`gcode_resend_s` seconds (agent default 60) so a dashboard started later, or one
+that lost a packet, still gets it. Limits are the shared contract
+`contracts/gcode/v1.json` (the agent repo vendors it).
+
+Every packet fits one Ethernet frame (at most 1 400 bytes), so a program is split
+into many chunks — about 1 000 characters of plain G-code each, fewer for
+non-ASCII text. A program is sent only if it has at most **33 554 432 characters
+(32 MiB)** and splits into at most **80 000** chunks; plain ASCII G-code of 32 MiB
+is about 34 000 chunks.
 
 ```json
 {
@@ -230,8 +235,9 @@ bytes), whatever `gcode_chunk_size` is set to (default 1,000 characters).
   "file_name":        "part_A.ngc",
   "file_size":        20480,
   "file_modified_ms": 1748500000000,
+  "content_sha256":   "36a3204b…",
   "chunk_index":      0,
-  "total_chunks":     1,
+  "total_chunks":     21,
   "content":          "%\nO0001 (Part A)\nG21 G90\n..."
 }
 ```
@@ -239,28 +245,46 @@ bytes), whatever `gcode_chunk_size` is set to (default 1,000 characters).
 | Field | Type | Description |
 |---|---|---|
 | `chunk_index` | integer | 0-based index of this chunk |
-| `total_chunks` | integer | Total chunks for this file |
-| `content` | string | UTF-8 text of this chunk |
+| `total_chunks` | integer | Total chunks for this file (1 … 80 000) |
+| `content` | string | Text of this chunk |
+| `content_sha256` | string | Optional (agent ≥ 1.7.0): lowercase hex SHA-256 of the **whole** program as UTF-8, the same in every chunk |
 
 **Reassembly:** concatenate `content` from `chunk_index` `0` through
-`total_chunks − 1`, in order. Because UDP may drop or reorder, a receiver should
-key chunks by `(file_name, file_size, file_modified_ms)` and only treat a file as
-complete once all indices `0…total_chunks−1` are present. A missing chunk will be
-re-sent on the next file change; the agent also re-sends the whole file when the
-fingerprint changes.
+`total_chunks − 1`, in order. UDP may drop or reorder, so key chunks by machine
+and `(file_name, file_size, file_modified_ms)`, and treat a file as complete only
+once all indices are present. If `content_sha256` is given and the assembled text
+does not match it, drop the program and wait for the next send. Bound memory by
+characters (per program and all together) and by the number of chunks held for
+all machines together — anyone on the network can send these packets.
 
-**Size limits (both sides).** A program is sent only if it is at most
-**32 MiB** (33,554,432 bytes, `file_size`) and splits into at most **65,536**
-chunks. A receiver must accept anything within both limits; the agent never sends
-more. With the default chunk size an ASCII program needs about one chunk per
-1,000 characters (about 34,000 for 32 MiB; about 48,000 with a 128-character
-machine name and 255-character file name, room being left in every chunk for a
-site-key signature, §8.1). A program over either limit is not
-sent at all; the agent logs this once (not on every resend) and status packets
-still name the file. Programs with many non-ASCII characters fit fewer characters
-per chunk and can reach the chunk limit before 32 MiB. A receiver keeps the chunks
-it already has between resends, so a big program completes over two or more
-resends even with some packet loss.
+### 5.1 Program too large (`type: "gcode_file_refused"`, agent ≥ 1.7.0)
+
+Sent instead of the chunks when a program is over either limit (and repeated at
+the resend interval):
+
+```json
+{ "type": "gcode_file_refused", "proto": 1, "ts": 1748563200000, "machine_name": "VMC-01",
+  "file_name": "huge.ngc", "file_size": 52428800, "file_modified_ms": 1748500000000,
+  "reason": "too_large", "limit_chars": 33554432, "limit_chunks": 80000 }
+```
+
+`reason` is `too_large` (characters) or `too_many_chunks`. The dashboard stops
+showing the previous program (it is no longer the loaded one) and says why.
+
+**Size limits (both sides).** The shared contract `contracts/gcode/v1.json`
+(canonical copy in FloorWatch) sets them: a program is sent only if it has at
+most **33,554,432 characters** (32 MiB of text) and splits into at most
+**80,000** chunks. A receiver must accept anything within both limits; the agent
+never sends more. Chunks are as large as one frame allows, with room left for a
+site-key signature (§8.1) and `content_sha256`: an ASCII program needs about one
+chunk per 980 characters (about 34,000 for 32 MiB; about 54,000 with a
+128-character machine name and 255-character file name). Programs with many
+non-ASCII characters fit fewer characters per chunk and can reach the chunk limit
+before 32 MiB. A program over either limit is not sent: one `gcode_file_refused`
+packet (§5.1) goes instead at each resend, the agent logs it once, and status
+packets still name the file. A receiver keeps the chunks it already has between
+resends, so a big program completes over two or more resends even with some
+packet loss.
 
 ---
 
@@ -418,7 +442,8 @@ to the forger.
 | 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
 | 1 | 2026-10 | Agent 1.7.0: optional site-key signature `sig` on every packet and history request, `nonce` in signed history requests (§8.1). Additive; no version bump. |
-| 1 | 2026-10 | Agent 1.7.0: `journal_state`; `agent_id` / `journal_seq` also sent while the journal is failing (last known values). G-code programs limited to 32 MiB / 65,536 chunks (§5). No version bump. |
+| 1 | 2026-10 | Agent 1.7.0: `journal_state`; `agent_id` / `journal_seq` also sent while the journal is failing (last known values). No version bump. |
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
+| 1 | 2026-10 | Additive (agent 1.7.0): `content_sha256` in `gcode_file`; new `gcode_file_refused` packet (§5.1); limits from `contracts/gcode/v1.json` (32 MiB, 80 000 chunks; was 4 096 chunks in FloorWatch). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

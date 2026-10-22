@@ -1,0 +1,11 @@
+{
+  "contract": "fw.gcode_file/1",
+  "description": "Loaded G-code program streamed by the agent to the dashboard (PROTOCOL.md section 5). Canonical copy: floorwatch/contracts/gcode/v1.json; the agent repo vendors it and its tests check its sender against these numbers.",
+  "max_program_chars": 33554432,
+  "max_chunks": 80000,
+  "max_packet_bytes": 1400,
+  "sender_rule": "send only if the program has at most max_program_chars characters AND splits into at most max_chunks packets of at most max_packet_bytes; otherwise send one gcode_file_refused packet instead. Plain ASCII G-code is about 1000 characters per packet, so 32 MiB is about 34000 packets.",
+  "receiver_rule": "accept total_chunks up to max_chunks and up to max_program_chars assembled characters; memory is bounded by characters and by the number of chunks held for all machines together.",
+  "content_sha256": "optional in every chunk: lowercase hex SHA-256 of the whole program text as UTF-8; a receiver that finds a mismatch after assembly drops the program",
+  "refused_packet": {"type": "gcode_file_refused", "fields": ["file_name", "file_size", "file_modified_ms", "reason", "limit_chars", "limit_chunks"], "reasons": ["too_large", "too_many_chunks"]}
+}

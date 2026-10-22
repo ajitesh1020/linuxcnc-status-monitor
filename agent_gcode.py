@@ -19,17 +19,21 @@ Why this is its own module, and not simple:
 * UDP is fire-and-forget and a dashboard may start after the program was
   loaded, so the current program is sent again every ``resend_s`` seconds. The
   dashboard keeps what it already has, so this costs it nothing.
-* A big program is sent from a background thread, paced, so the status loop is
-  never held up and the dashboard's socket buffer is not flooded.
-* A dashboard holds at most ``MAX_PROGRAM_BYTES`` / ``MAX_CHUNKS`` per program
-  (PROTOCOL.md §5). A program over either limit is not sent at all, and not
-  again on every resend: the dashboard would refuse it anyway.
+* A big program is read, split and sent from a background thread, paced and
+  packet by packet (never all packets in memory), so the status loop is never
+  held up and the dashboard's socket buffer is not flooded.
+* The shared contract (contracts/gcode/v1.json) limits a program to
+  ``MAX_PROGRAM_CHARS`` characters and ``MAX_CHUNKS`` packets. A program over
+  either limit is not sent; one small ``gcode_file_refused`` packet goes instead
+  (again on every resend, so a dashboard started later learns it too), and the
+  agent logs it once, not on every resend.
 """
+import hashlib
 import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from agent_auth import SIG_RESERVE
 
@@ -41,9 +45,12 @@ RETRY_AFTER_FAILURE_S = 10.0
 PACE_S = 0.001                  # between packets: about 1 MB/s at most
 SEND_TRIES = 3                  # per packet (the socket never blocks)
 
-# End-to-end limits agreed with the dashboard (PROTOCOL.md §5).
-MAX_PROGRAM_BYTES = 32 * 1024 * 1024
-MAX_CHUNKS = 65_536
+# The dashboard contract (FloorWatch contracts/gcode/v1.json, vendored in
+# contracts/gcode/v1.json; tests check these match): a program is sent only if
+# it has at most MAX_PROGRAM_CHARS characters AND splits into at most MAX_CHUNKS
+# packets; otherwise one gcode_file_refused packet tells the dashboard why.
+MAX_PROGRAM_CHARS = 32 * 1024 * 1024
+MAX_CHUNKS = 80_000
 
 Fingerprint = Tuple[str, int, int]
 
@@ -90,21 +97,21 @@ class GcodeFileSender:
         self._sent_at = 0.0
         self._retry_at = 0.0
         self._generation = 0            # bumped by reset(): an old send must not mark success
-        self._too_big: Optional[Fingerprint] = None   # over a limit: never sent
+        # (fingerprint, reason) of a program over a limit: logged once, and its
+        # refusal resent without reading the file again.
+        self._refused: Optional[Tuple[Fingerprint, str]] = None
 
     def reset(self) -> None:
         """Forget what was sent so the file goes out again after a LinuxCNC restart."""
         with self._lock:
             self._sent_fingerprint = None
             self._retry_at = 0.0
-            self._too_big = None
+            self._refused = None
             self._generation += 1
 
     def _due(self, fp: Fingerprint, now: float) -> bool:
         with self._lock:
             if self._worker is not None and self._worker.is_alive():
-                return False
-            if fp == self._too_big:
                 return False
             if now < self._retry_at:
                 return False
@@ -114,50 +121,46 @@ class GcodeFileSender:
 
     def check_and_send(self, file_path: str, meta: Dict[str, Any],
                        send: Callable[[bytes], bool]) -> None:
+        """Called from the status loop: decides only whether a send is due. The file
+        is read, split and sent by the worker, never on the calling thread."""
         fp: Fingerprint = (meta["file_name"], meta["file_size"], meta["file_modified_ms"])
         if not file_path or not meta["file_name"]:
             return
         now = self._clock()
         if not self._due(fp, now):
             return
-        if meta["file_size"] > MAX_PROGRAM_BYTES:
-            self._refuse(fp, f"{meta['file_size']} bytes (limit {MAX_PROGRAM_BYTES})")
-            return
-        try:
-            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                content = f.read()
-        except OSError as exc:
-            logger.error("Cannot read G-code file for sending: %s", exc)
-            with self._lock:
-                self._retry_at = now + RETRY_AFTER_FAILURE_S
-            return
         with self._lock:
-            first = fp != self._sent_fingerprint
+            first = fp != self._sent_fingerprint and (self._refused is None
+                                                      or self._refused[0] != fp)
             generation = self._generation
         if first:
             logger.info("G-code file changed → %s (%d bytes). Sending.",
                         meta["file_name"], meta["file_size"])
         if self._threaded:
             worker = threading.Thread(target=self._run, name="gcode-send", daemon=True,
-                                      args=(meta, fp, content, send, generation))
+                                      args=(meta, fp, file_path, send, generation))
             with self._lock:
                 self._worker = worker
             worker.start()
         else:
-            self._run(meta, fp, content, send, generation)
+            self._run(meta, fp, file_path, send, generation)
 
-    def _refuse(self, fp: Fingerprint, why: str) -> None:
-        with self._lock:
-            if self._too_big == fp:
-                return
-            self._too_big = fp
-        logger.warning("G-code file %s not sent: %s. The dashboard shows no program text "
-                       "for it.", fp[0], why)
+    def refused_packet(self, meta: Dict[str, Any], reason: str) -> bytes:
+        """Sent instead of the chunks of a program over the contract's limits."""
+        return json.dumps({
+            "type": "gcode_file_refused", "proto": self._proto,
+            "ts": int(time.time_ns() // 1_000_000), "machine_name": self._machine_name,
+            "file_name": meta["file_name"], "file_size": meta["file_size"],
+            "file_modified_ms": meta["file_modified_ms"], "reason": reason,
+            "limit_chars": MAX_PROGRAM_CHARS, "limit_chunks": MAX_CHUNKS,
+        }, ensure_ascii=False).encode("utf-8")
 
     def _pieces(self, meta: Dict[str, Any], content: str) -> Tuple[Dict[str, Any], List[str]]:
         head = {"type": "gcode_file", "proto": self._proto, "ts": 0,
                 "machine_name": self._machine_name, "file_name": meta["file_name"],
                 "file_size": meta["file_size"], "file_modified_ms": meta["file_modified_ms"],
+                "content_sha256": hashlib.sha256(
+                    content.encode("utf-8", "surrogatepass")).hexdigest(),
                 "chunk_index": 99999, "total_chunks": 99999, "content": ""}
         overhead = (len(json.dumps(head, ensure_ascii=False).encode("utf-8")) + 16
                     + SIG_RESERVE)              # room for a site-key signature
@@ -171,21 +174,67 @@ class GcodeFileSender:
                         total_chunks=len(pieces), content=piece)
             yield json.dumps(head, ensure_ascii=False).encode("utf-8")
 
-    def packets(self, meta: Dict[str, Any], content: str) -> List[bytes]:
-        return list(self._encode(*self._pieces(meta, content)))
+    def _stream(self, meta: Dict[str, Any], content: str) -> Tuple[Optional[str], Iterable[bytes]]:
+        """(refusal reason or None, the packets to send) for this program text."""
+        if len(content) > MAX_PROGRAM_CHARS:
+            return "too_large", [self.refused_packet(meta, "too_large")]
+        head, pieces = self._pieces(meta, content)
+        if len(pieces) > MAX_CHUNKS:
+            return "too_many_chunks", [self.refused_packet(meta, "too_many_chunks")]
+        return None, self._encode(head, pieces)
 
-    def _run(self, meta: Dict[str, Any], fp: Fingerprint, content: str,
+    def packets(self, meta: Dict[str, Any], content: str) -> List[bytes]:
+        """Every packet for this program text (tests and tools; the sender streams)."""
+        return list(self._stream(meta, content)[1])
+
+    def _prepare(self, file_path: str, meta: Dict[str, Any],
+                 fp: Fingerprint) -> Optional[Tuple[Optional[str], Iterable[bytes]]]:
+        """(refusal reason or None, packets) for the program in file_path, or None
+        when it cannot be read. A file too big to possibly fit (UTF-8 is at most
+        4 bytes a character) is refused without being read, a refusal already
+        found is resent without reading again, and at most one character past
+        the limit is ever read."""
+        with self._lock:
+            known = self._refused[1] if self._refused and self._refused[0] == fp else None
+        if known:
+            return known, [self.refused_packet(meta, known)]
+        if int(meta.get("file_size") or 0) > 4 * MAX_PROGRAM_CHARS:
+            return "too_large", [self.refused_packet(meta, "too_large")]
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read(MAX_PROGRAM_CHARS + 1)       # one more = "too large"
+        except OSError as exc:
+            logger.error("Cannot read G-code file for sending: %s", exc)
+            return None
+        return self._stream(meta, content)
+
+    def _note_refusal(self, fp: Fingerprint, reason: str, generation: int) -> None:
+        with self._lock:
+            if generation != self._generation or (self._refused and self._refused[0] == fp):
+                return
+            self._refused = (fp, reason)
+        limit = (f"{MAX_PROGRAM_CHARS} characters" if reason == "too_large"
+                 else f"{MAX_CHUNKS} packets")
+        logger.warning("G-code file %s not sent: over the limit of %s. The dashboard is "
+                       "told and shows no program text for it.", fp[0], limit)
+
+    def _run(self, meta: Dict[str, Any], fp: Fingerprint, file_path: str,
              send: Callable[[bytes], bool], generation: int) -> None:
         try:
-            head, pieces = self._pieces(meta, content)
-            if len(pieces) > MAX_CHUNKS:
-                with self._lock:
-                    current = generation == self._generation
-                if current:
-                    self._refuse(fp, f"{len(pieces)} chunks (limit {MAX_CHUNKS})")
-                return
+            prepared = self._prepare(file_path, meta, fp)
+        except Exception as exc:                   # never take the agent down
+            logger.warning("G-code file could not be prepared: %s", exc)
+            prepared = None
+        if prepared is None:
+            with self._lock:
+                self._retry_at = self._clock() + RETRY_AFTER_FAILURE_S
+            return
+        reason, packets = prepared
+        if reason:
+            self._note_refusal(fp, reason, generation)
+        try:
             ok = True
-            for packet in self._encode(head, pieces):
+            for packet in packets:
                 for attempt in range(SEND_TRIES):    # a full buffer drains in milliseconds
                     if send(packet):
                         break
