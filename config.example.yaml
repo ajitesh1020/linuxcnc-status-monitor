@@ -35,6 +35,12 @@ exclude_interfaces: ""
 # Example: "VMC-01" or "Router-Bay-3". Must be unique per machine.
 machine_name: ""
 
+# This machine's permanent id (machine_uuid), made on the first start and never
+# changed. The dashboard tells machines apart by it, not by name. Empty = the
+# default file ~/linuxcnc-monitor-agent/identity.json. Keep the file in backups;
+# do not copy it to another machine (two PCs would then look like one).
+machine_uuid_file: ""
+
 # Seconds between status packets while the machine is active. 1.0 is typical.
 poll_interval_s: 1.0
 

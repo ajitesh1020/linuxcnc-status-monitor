@@ -31,6 +31,7 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `monitor_pc_port` | int | `5005` | UDP port the dashboard listens on |
 | `exclude_interfaces` | string | `""` | Interfaces never to broadcast on, comma-separated. The Mesa `hm2_eth` interface is skipped automatically |
 | `machine_name` | string | `""` | Name shown in the dashboard; empty = the PC's hostname. Must be unique per machine |
+| `machine_uuid_file` | string | `""` | Where the machine's permanent id is kept; empty = `~/linuxcnc-monitor-agent/identity.json`. Made on the first start, never changed after; keep it in backups. Deleting it makes the dashboard see a new machine (PROTOCOL.md §4.1b) |
 | `poll_interval_s` | float | `1.0` | Seconds between status packets while active |
 | `sample_interval_s` | float | `0.1` | Seconds between LinuxCNC reads for cycle / part tracking |
 | `idle_heartbeat_interval_s` | float | `30.0` | Keep-alive interval while idle |
