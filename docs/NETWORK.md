@@ -38,8 +38,10 @@ when idle.
 
 ## Do I need a static IP on the LinuxCNC PC?
 
-**No.** The agent only sends; the dashboard identifies machines by
-`machine_name` (default: the PC's hostname), not by IP.
+**No.** The agent only sends; the dashboard identifies machines by their
+permanent `machine_uuid` (agent 1.7.0+, kept in
+`~/linuxcnc-monitor-agent/identity.json`), or by `machine_name` (default: the
+PC's hostname) for older agents — never by IP.
 
 If you want one anyway (e.g. to SSH in), a static IP does **not** break the
 internet as long as you also set the **gateway** (your router, e.g.
