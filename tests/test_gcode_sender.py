@@ -34,11 +34,17 @@ class Net:
         self.packets.append(payload)
         return True
 
+    def refusals(self):
+        return [json.loads(raw) for raw in self.packets
+                if json.loads(raw)["type"] == "gcode_file_refused"]
+
     def program(self):
         parts = {}
         total = 0
         for raw in self.packets:
             p = json.loads(raw)
+            if p["type"] != "gcode_file":
+                continue
             parts[p["chunk_index"]] = p["content"]
             total = p["total_chunks"]
         return "".join(parts[i] for i in range(total)) if len(parts) == total else None
@@ -203,50 +209,60 @@ class SplitTests(unittest.TestCase):
 
 
 class SizeLimitTests(SenderCase):
-    """F05: a program the dashboard would refuse is not sent, and not every resend."""
+    """F05 / contracts/gcode/v1.json: a program over a limit is replaced by one
+    gcode_file_refused packet, logged once and not read again on every resend."""
 
     def test_the_agreed_limits(self):
-        self.assertEqual(agent_gcode.MAX_PROGRAM_BYTES, 32 * 1024 * 1024)
-        self.assertEqual(agent_gcode.MAX_CHUNKS, 65_536)
+        self.assertEqual(agent_gcode.MAX_PROGRAM_CHARS, 32 * 1024 * 1024)
+        self.assertEqual(agent_gcode.MAX_CHUNKS, 80_000)
 
     def test_a_32_mib_ascii_program_stays_within_the_chunk_limit(self):
-        # Worst ordinary case: default chunk size, longest machine / file names.
+        # Worst ordinary case: default chunk size, longest machine / file names,
+        # room for a site-key signature and content_sha256 in every chunk.
         sender = agent_gcode.GcodeFileSender(1000, "M" * 128, 1, threaded=False)
-        meta = {"file_name": "f" * 255 + ".ngc", "file_size": agent_gcode.MAX_PROGRAM_BYTES,
+        meta = {"file_name": "f" * 251 + ".ngc", "file_size": agent_gcode.MAX_PROGRAM_CHARS,
                 "file_modified_ms": 1}
         _head, pieces = sender._pieces(meta, "G1 X1.234 Y5.678 F900\n" * 2000)
         per_chunk = min(len(p) for p in pieces[:-1])
-        self.assertLessEqual(agent_gcode.MAX_PROGRAM_BYTES / per_chunk, agent_gcode.MAX_CHUNKS)
+        self.assertLessEqual(agent_gcode.MAX_PROGRAM_CHARS / per_chunk, agent_gcode.MAX_CHUNKS)
 
-    def test_a_file_over_the_size_limit_is_not_read_or_sent(self):
+    def test_a_program_over_the_character_limit_is_refused_visibly(self):
         path, meta = self.write("G0 X0\n" * 100)
-        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100), \
-                self.assertLogs("lcnc_status_agent", "WARNING") as logs:
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_CHARS", 100),                 self.assertLogs("lcnc_status_agent", "WARNING") as logs:
             self.push(path, meta)
-        self.assertEqual(self.net.packets, [])
+        self.assertEqual([r["reason"] for r in self.net.refusals()], ["too_large"])
+        self.assertEqual(len(self.net.packets), 1)
         self.assertIn("not sent", logs.output[0])
 
-    def test_too_many_chunks_is_not_sent(self):
-        path, meta = self.write("G0 X0\n" * 20000)            # 120 KB → > 100 chunks
-        with mock.patch.object(agent_gcode, "MAX_CHUNKS", 100), \
-                self.assertLogs("lcnc_status_agent", "WARNING"):
+    def test_too_many_chunks_is_refused_visibly(self):
+        path, meta = self.write("G0 X0\n" * 20000)            # 120 KB -> > 100 chunks
+        with mock.patch.object(agent_gcode, "MAX_CHUNKS", 100),                 self.assertLogs("lcnc_status_agent", "WARNING"):
             self.push(path, meta)
-        self.assertEqual(self.net.packets, [])
+        self.assertEqual([r["reason"] for r in self.net.refusals()], ["too_many_chunks"])
+        self.assertEqual(len(self.net.packets), 1)
 
-    def test_refused_once_not_on_every_resend(self):
-        path, meta = self.write("G0 X0\n" * 100)
-        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100):
+    def test_refusal_is_logged_once_resent_and_the_file_read_once(self):
+        path, meta = self.write("G0 X0\n" * 30)       # over 100 chars, under 4 x 100 bytes
+        real_open = open
+        opened = []
+
+        def counting_open(file, *a, **kw):
+            if file == path:
+                opened.append(file)
+            return real_open(file, *a, **kw)
+
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_CHARS", 100),                 mock.patch("builtins.open", counting_open):
             with self.assertLogs("lcnc_status_agent", "WARNING") as logs:
                 for _ in range(5):
                     self.push(path, meta)
                     self.clock.t += 61
             self.assertEqual(len(logs.output), 1)
-        self.assertEqual(self.net.packets, [])
+        self.assertEqual(len(self.net.refusals()), 5)       # a late dashboard learns it too
+        self.assertEqual(len(opened), 1)
 
     def test_a_smaller_version_of_the_file_goes_out(self):
         path, meta = self.write("G0 X0\n" * 100)
-        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100), \
-                self.assertLogs("lcnc_status_agent", "WARNING"):
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_CHARS", 100),                 self.assertLogs("lcnc_status_agent", "WARNING"):
             self.push(path, meta)
             path, meta = self.write("G0 X1\n", name="part.ngc")
             meta["file_modified_ms"] += 1                       # same second on some filesystems
@@ -255,8 +271,7 @@ class SizeLimitTests(SenderCase):
 
     def test_reset_tries_a_refused_file_again(self):
         path, meta = self.write("G0 X0\n" * 100)
-        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100), \
-                self.assertLogs("lcnc_status_agent", "WARNING") as logs:
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_CHARS", 100),                 self.assertLogs("lcnc_status_agent", "WARNING") as logs:
             self.push(path, meta)
             self.sender.reset()
             self.push(path, meta)
