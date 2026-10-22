@@ -146,6 +146,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "monitor_pc_ip":             "auto",          # "auto" = LAN broadcast, or IP / host list
     "monitor_pc_port":           5005,            # UDP port on the monitoring PC
     "exclude_interfaces":        "",              # never broadcast on these (comma list)
+    "monitor_interface":         "",              # send only on this interface ("" = any)
     "machine_name":              "",              # "" = this PC's hostname
     "poll_interval_s":           1.0,             # seconds between active status packets
     "sample_interval_s":         0.1,             # seconds between stat reads (cycle tracking)
@@ -722,13 +723,15 @@ def _parse_args() -> argparse.Namespace:
 
 def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) -> None:
     sender = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
-                       cfg["exclude_interfaces"])
+                       cfg["exclude_interfaces"], interface=cfg["monitor_interface"])
     running = LinuxCNCWatch().alive()
     key = key_bytes(cfg["site_key"])
     print(f"lcnc-status-agent {AGENT_VERSION}")
     print(f"  config file   : {cfg_path or '(none — built-in defaults)'}")
     print(f"  machine name  : {machine_name}")
     print(f"  monitor_pc_ip : {cfg['monitor_pc_ip']}")
+    plan = sender.interface_plan
+    print(f"  interface     : {plan.describe() if plan else 'any (monitor_interface not set)'}")
     print(f"  sending to    : {', '.join(sender.targets) or '(nothing!)'} "
           f"port {cfg['monitor_pc_port']}")
     print(f"  LinuxCNC      : {'running' if running else 'not running'}")
@@ -809,7 +812,8 @@ def main() -> None:
         logger.warning("site_key is only %d characters; use at least %d.",
                        len(cfg["site_key"].strip()), MIN_KEY_CHARS)
     sender        = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
-                              cfg["exclude_interfaces"], key=site_key)
+                              cfg["exclude_interfaces"], key=site_key,
+                              interface=cfg["monitor_interface"])
     gcode_sender  = GcodeFileSender(cfg["gcode_chunk_size"], machine_name, PROTOCOL_VERSION,
                                     cfg["gcode_resend_s"])
     watch         = LinuxCNCWatch()

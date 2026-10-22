@@ -22,6 +22,16 @@ traffic, so any interface with a Mesa board on it (MAC prefix 00:60:1b in the
 ARP table — hm2_eth adds that entry) is skipped automatically, as are
 loopback, point-to-point links and anything in ``exclude_interfaces``.
 
+``monitor_interface`` (e.g. "enp2s0") sends only on that interface: the socket
+is bound to the interface's IPv4 address, "auto" becomes that interface's
+broadcast address only, and a fixed IP or host name is used only if the route
+to it leaves through that interface (``ip route get <ip> from <address>``).
+Binding the source address alone would not be enough: Linux may still route a
+packet out of another card. SO_BINDTODEVICE would need root. The interface is
+refused (nothing is sent) if it has a Mesa board on it or is listed in
+``exclude_interfaces``; if it is missing, down or has no IPv4 address, nothing
+is sent until it comes back (checked every 30 s).
+
 Targets are refreshed on a background thread so a slow DNS lookup can never
 stall the sampling loop.
 """
@@ -110,17 +120,92 @@ def discover_broadcast_targets(exclude: Iterable[str]) -> List[str]:
     return [b for _, b in pairs]
 
 
+def interface_ipv4(ip_addr_json: list, name: str) -> Optional[Tuple[str, Optional[str]]]:
+    """(address, broadcast) of interface `name` if it is up and has an IPv4
+    address; broadcast is None on a point-to-point (/31, /32) address."""
+    for iface in ip_addr_json or []:
+        if iface.get("ifname") != name or "UP" not in set(iface.get("flags") or []):
+            continue
+        for a in iface.get("addr_info") or []:
+            if a.get("family") != "inet" or not a.get("local"):
+                continue
+            try:
+                prefix = int(a.get("prefixlen", 32))
+                bcast = None
+                if prefix < 31:
+                    bcast = a.get("broadcast") or str(ipaddress.IPv4Network(
+                        f"{a['local']}/{prefix}", strict=False).broadcast_address)
+                return str(ipaddress.IPv4Address(a["local"])), bcast
+            except ValueError:
+                continue
+    return None
+
+
+def _ip_json(args: List[str]) -> list:
+    res = subprocess.run(["ip", "-j"] + args, capture_output=True, text=True, timeout=3)
+    return json.loads(res.stdout or "[]")
+
+
+def route_device(dest: str, source: str) -> Optional[str]:
+    """The interface the kernel would send `dest` out of, from `source`."""
+    try:
+        routes = _ip_json(["route", "get", dest, "from", source])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return routes[0].get("dev") if routes and isinstance(routes[0], dict) else None
+
+
+class InterfacePlan:
+    """What monitor_interface allows right now."""
+
+    def __init__(self, interface: str, address: Optional[str] = None,
+                 broadcast: Optional[str] = None, problem: str = "") -> None:
+        self.interface, self.address, self.broadcast = interface, address, broadcast
+        self.problem = problem              # "" = usable
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, InterfacePlan) and vars(self) == vars(other)
+
+    def describe(self) -> str:
+        if self.problem:
+            return f"{self.interface} — {self.problem}; nothing is sent"
+        return (f"{self.interface}, address {self.address}, broadcast "
+                f"{self.broadcast or '(none: point-to-point)'}")
+
+
+def plan_interface(interface: str, exclude: Iterable[str]) -> InterfacePlan:
+    if interface in set(exclude):
+        return InterfacePlan(interface, problem="listed in exclude_interfaces")
+    if interface in mesa_interfaces(_read("/proc/net/arp")):
+        return InterfacePlan(interface, problem="a Mesa board is on it (control network)")
+    try:
+        data = _ip_json(["-4", "addr", "show", "dev", interface])
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        return InterfacePlan(interface, problem=f"cannot list interfaces ({exc})")
+    found = interface_ipv4(data, interface)
+    if found is None:
+        return InterfacePlan(interface, problem="missing, down or without an IPv4 address")
+    return InterfacePlan(interface, found[0], found[1])
+
+
 def parse_targets(setting: str) -> List[str]:
     items = [s.strip() for s in str(setting or "").split(",")]
     return [s for s in items if s] or ["auto"]
 
 
-def resolve_targets(setting: str, exclude: Iterable[str]) -> List[str]:
-    """Turn the monitor_pc_ip setting into a list of destination IPs."""
+def resolve_targets(setting: str, exclude: Iterable[str],
+                    plan: Optional[InterfacePlan] = None) -> List[str]:
+    """Turn the monitor_pc_ip setting into a list of destination IPs. With an
+    interface plan, only destinations that leave through that interface."""
+    if plan is not None and plan.problem:
+        return []
     out: List[str] = []
     for item in parse_targets(setting):
         if item.lower() in AUTO_WORDS:
-            out.extend(discover_broadcast_targets(exclude))
+            if plan is None:
+                out.extend(discover_broadcast_targets(exclude))
+            elif plan.broadcast:
+                out.append(plan.broadcast)
             continue
         try:
             out.append(str(ipaddress.IPv4Address(item)))
@@ -131,8 +216,17 @@ def resolve_targets(setting: str, exclude: Iterable[str]) -> List[str]:
             out.append(socket.gethostbyname(item))
         except OSError as exc:
             logger.warning("Cannot resolve monitor host %r: %s", item, exc)
-    # keep order, drop duplicates
-    return list(dict.fromkeys(out))
+    out = list(dict.fromkeys(out))          # keep order, drop duplicates
+    if plan is None:
+        return out
+    kept = []
+    for ip in out:
+        if ip == plan.broadcast or route_device(ip, plan.address) == plan.interface:
+            kept.append(ip)
+        else:
+            logger.warning("Not sending to %s: it is not reached through "
+                           "monitor_interface %s.", ip, plan.interface)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -142,8 +236,12 @@ class UdpSender:
     """Sends each payload to every current target. Never blocks on DNS."""
 
     def __init__(self, setting: str, port: int, exclude_interfaces: str = "",
-                 key: Optional[bytes] = None) -> None:
+                 key: Optional[bytes] = None, interface: str = "") -> None:
         self._setting = setting
+        self._interface = str(interface or "").strip()
+        self._plan: Optional[InterfacePlan] = None
+        self._source: Optional[str] = None   # bound address (monitor_interface)
+        self._sock_lock = threading.Lock()
         self._key = key                      # site key: every packet is signed
         self._port = int(port)
         self._exclude = [s.strip() for s in str(exclude_interfaces or "").split(",") if s.strip()]
@@ -161,11 +259,30 @@ class UdpSender:
     def targets(self) -> List[str]:
         return list(self._targets)
 
+    @property
+    def interface_plan(self) -> Optional[InterfacePlan]:
+        """None when monitor_interface is not set."""
+        return self._plan
+
     def refresh(self) -> None:
         try:
-            new = resolve_targets(self._setting, self._exclude)
+            plan = plan_interface(self._interface, self._exclude) if self._interface else None
+            new = resolve_targets(self._setting, self._exclude, plan)
         except Exception as exc:   # never let discovery kill the agent
             logger.warning("Target refresh failed: %s", exc)
+            return
+        if plan is not None:
+            if plan != self._plan:
+                (logger.warning if plan.problem else logger.info)(
+                    "monitor_interface %s", plan.describe())
+            self._plan = plan
+            if plan.address != self._source:
+                self._source = plan.address
+                self._create_socket()        # bind to the new address (or none)
+            if new != self._targets:
+                logger.info("Sending status to %s (port %d) via %s",
+                            ", ".join(new) or "nothing", self._port, self._interface)
+            self._targets = new              # may be empty: send nothing
             return
         if new and new != self._targets:
             logger.info("Sending status to %s (port %d)", ", ".join(new), self._port)
@@ -177,28 +294,39 @@ class UdpSender:
             self.refresh()
 
     def _create_socket(self) -> None:
-        try:
-            if self._sock:
-                self._sock.close()
-            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
-            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            # Never wait in the sampling loop: a full send buffer drops the packet.
-            self._sock.setblocking(False)
-        except OSError as exc:
-            logger.error("Failed to create UDP socket: %s", exc)
-            self._sock = None
+        with self._sock_lock:
+            old, self._sock = self._sock, None
+            if old:
+                old.close()
+            if self._interface and not self._source:
+                return                       # interface unusable: no socket, nothing sent
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                if self._source:
+                    sock.bind((self._source, 0))
+                # Never wait in the sampling loop: a full send buffer drops the packet.
+                sock.setblocking(False)
+                self._sock = sock
+            except OSError as exc:
+                logger.error("Failed to create UDP socket%s: %s",
+                             f" on {self._source}" if self._source else "", exc)
+                if sock:
+                    sock.close()
 
     def send(self, payload: bytes) -> bool:
         payload = sign(payload, self._key)
-        if self._sock is None:
+        if self._sock is None and not (self._interface and not self._source):
             self._create_socket()
-        if self._sock is None:
+        sock, targets = self._sock, self._targets
+        if sock is None or not targets:
             return False
         ok = busy = False
-        for ip in self._targets:
+        for ip in targets:
             try:
-                self._sock.sendto(payload, (ip, self._port))
+                sock.sendto(payload, (ip, self._port))
                 ok = True
             except BlockingIOError:
                 busy = True                  # send buffer full: this packet is dropped
@@ -211,9 +339,10 @@ class UdpSender:
 
     def close(self) -> None:
         self._stop.set()
-        if self._sock:
-            try:
-                self._sock.close()
-            except OSError:
-                pass
-            self._sock = None
+        with self._sock_lock:
+            if self._sock:
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
+                self._sock = None

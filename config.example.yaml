@@ -31,6 +31,13 @@ monitor_pc_port: 5005
 # The Mesa hm2_eth card's interface is detected and skipped automatically.
 exclude_interfaces: ""
 
+# Send only on this network card (e.g. "enp2s0"), never on any other. Packets
+# leave from its address; "auto" broadcasts on it only; a fixed IP or host name
+# is used only if it is reached through it. Nothing is sent while the card is
+# missing, down, the Mesa card or listed above. "" = any card (as before).
+# Never the Mesa card. See docs/NETWORK.md "Restricted pilot network".
+monitor_interface: ""
+
 # Name shown in the dashboard. Empty = this PC's hostname.
 # Example: "VMC-01" or "Router-Bay-3". Must be unique per machine.
 machine_name: ""
