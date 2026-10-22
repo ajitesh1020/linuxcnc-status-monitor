@@ -128,6 +128,7 @@ class StatusLoopTests(unittest.TestCase):
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.agent_dir = tmp.name
         try:
             sys.modules.pop("status", None)
             status = importlib.import_module("status")
@@ -280,6 +281,48 @@ class StatusLoopTests(unittest.TestCase):
             self.assertEqual(p["features"], ["mes1"])
             self.assertEqual((p["mes_spool"]["state"], p["mes_spool"]["pending"]), ("ok", 0))
             self.assertGreater(p["mes_spool"]["bytes"], 0)
+
+    def _program(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        prog = os.path.join(tmp.name, "part.ngc")
+        with open(prog, "w") as f:
+            f.write("%\nG21 G90\n" + "".join(f"G1 X{i} F100\n" for i in range(20)) + "M30\n%\n")
+        run = [(2.0, 8.0, "task_mode", 2), (2.0, 8.0, "interp_state", 2), (0.0, 99.0, "file", prog)]
+        run += [(2.0 + i * 0.5, 2.5 + i * 0.5, "motion_line", 3 + i) for i in range(11)]
+        run.append((7.5, 99.0, "motion_line", 22))
+        return tmp.name, prog, run
+
+    def _cycles(self):
+        import sqlite3 as sq
+        with sq.connect(os.path.join(self.agent_dir, "mes_spool.db")) as db:
+            return [json.loads(b) for (b,) in db.execute(
+                "SELECT body FROM spool WHERE type='cycle.observed' ORDER BY seq")]
+
+    def test_cycle_observed_with_millwrights_execution_id(self):
+        import uuid as u
+        cfg_dir, prog, run = self._program()
+        os.makedirs(os.path.join(cfg_dir, "mw_data"))
+        eid, sid = str(u.uuid4()), str(u.uuid4())
+        with open(os.path.join(cfg_dir, "mw_data", "current_execution.json"), "w") as f:
+            json.dump({"execution_id": eid, "started_at": real_time.strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z", real_time.gmtime()), "program_path": prog, "run_file": prog,
+                "mode": "normal", "station_id": str(u.uuid4()), "operator_session_id": sid}, f)
+        _, packets, _ = self.run_agent(run, stop_at=12.0, mes_enabled=True, mes_millwright_config=cfg_dir)
+        self.assertEqual(packets[-1]["parts_produced"], 1)
+        (c,) = self._cycles()
+        self.assertEqual(c["correlation"]["execution_id"], eid)
+        self.assertEqual(c["correlation"]["operator_session_id"], sid)
+        self.assertEqual((c["payload"]["outcome"], c["payload"]["correlation_method"],
+                          c["payload"]["program_path"]), ("completed", "explicit", prog))
+
+    def test_cycle_observed_without_millwright(self):
+        _cfg, prog, run = self._program()
+        self.run_agent(run, stop_at=12.0, mes_enabled=True)
+        (c,) = self._cycles()
+        self.assertEqual((c["payload"]["correlation_method"], c["correlation"]["operator_session_id"]),
+                         ("none", None))
+        self.assertRegex(c["correlation"]["execution_id"], r"^[0-9a-f-]{36}$")
 
     def test_no_machine_uuid_field_if_identity_cannot_be_written(self):
         tmp = tempfile.TemporaryDirectory()

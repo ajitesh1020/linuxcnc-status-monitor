@@ -155,13 +155,17 @@ All in `<LinuxCNC config dir>/mw_data/` (the agent finds it through config key
   ```json
   {"execution_id": "<uuid v4>", "started_at": "2026-10-22T09:08:10.000Z",
    "program_path": "/home/cnc/linuxcnc/nc_files/bracket_v3.ngc",
-   "mode": "normal", "station_id": "<uuid v4>", "operator_session_id": "<uuid v4 or null>"}
+   "mode": "normal", "station_id": "<uuid v4>", "operator_session_id": "<uuid v4 or null>",
+   "run_file": "/home/cnc/linuxcnc/configs/test_config/mw_gen/atc_run_1.ngc"}
   ```
 
-  `mode` uses the contract's `execution.started` values. The agent treats a run
-  as the same one when `program_path` matches and `started_at` is at most 3 s
-  before the agent's own cycle start (plan P1.6); otherwise it makes its own
-  `execution_id` and `correlation_method: "none"`.
+  `mode` uses the contract's `execution.started` values. `run_file` (added
+  23 Oct 2026, agreed; optional) is the file LinuxCNC actually runs — the
+  generated file for Job-tab runs, else equal to `program_path`. The agent
+  treats a run as the same one when `program_path` or `run_file` is the file
+  LinuxCNC runs and `started_at` is at most 3 s before (or, for poll jitter, up
+  to 1 s after) the agent's own cycle start (plan P1.6); otherwise it makes its
+  own `execution_id` and `correlation_method: "none"`.
 - `millwright.db` table `mw_outbox` exactly as plan P1.4 (`seq`, `event_id`,
   `type`, `occurred_at`, `body` = the encoded envelope, `audit_id`), with
   `state` rows `station_id` and `outbox_epoch`. MillWright's envelopes:

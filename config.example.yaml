@@ -83,6 +83,7 @@ site_key: ""
 # ~/linuxcnc-monitor-agent/mes_spool.db. Off by default: nothing MES runs.
 mes_enabled: false
 mes_spool_mb: 1024          # disk budget; when full, new events are refused, never dropped
+mes_millwright_config: ""   # LinuxCNC config folder with MillWright's mw_data/ ("" = no MillWright)
 
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen
