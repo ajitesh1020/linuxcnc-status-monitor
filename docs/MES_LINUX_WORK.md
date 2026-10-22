@@ -45,11 +45,13 @@ Done so far (all on `main` of their repos, or open PRs about to be merged):
 | P0.2 G-code 32 MiB / 80,000 chunks, `gcode_file_refused` | agent PR #17; FloorWatch PR #34 |
 | P1.1–P1.3 MES event contract `fw.mes.event/1` | FloorWatch `contracts/mes/v1/` (PR #32); copy in this repo (PR #16) |
 | P0.1, P0.3, P0.7, P0.9 | FloorWatch PRs #33, #38, #35, #37 |
+| P0.6 FloorWatch side (machines keyed by `machine_uuid`), P1.7 "MES-capable agent" display | FloorWatch PRs #40, #41 |
+| Contract 1.1: `scan.rejected_local` reason `spool_full` | FloorWatch PR #39; copy in this repo (PR #21) |
+| Site service: ledger, ingestion and receipts; private CA, enrolment, HTTPS with client certificates (P3.1–P3.3) | FloorWatch PRs #42, #43; API: FloorWatch `docs/MES_SERVICE_API.md` |
 
-The Windows session does next, in parallel with you: P0.4's FloorWatch display
-of `journal_state`, P0.6's FloorWatch side (machines keyed by `machine_uuid`),
-`docs/COMPATIBILITY.md`, then Phase 3 (the site service: API, ledger,
-connectors).
+The Windows session does next, in parallel with you: the rest of Phase 3 (the
+service as a Windows service, users and roles, connectors), P0.4's FloorWatch
+display of `journal_state` and `docs/COMPATIBILITY.md`.
 
 ## 2. Your packages, in order
 
@@ -68,8 +70,8 @@ one (`python3 -m unittest discover -s tests`). Update `CHANGELOG.md`
 | F | Agent MES spool `agent_mes_spool.py` (WAL, `synchronous=FULL`, budget, never prunes unacked) | agent | P2.4 | — |
 | G | Agent ↔ MillWright: outbox reader → spool in one transaction with its cursor, `mes_ack.json`, `cycle.observed` with `execution_id` | agent | P1.6 | E, F |
 | H | `loop_lag_ms` (p99) in status packets; agent-on / agent-off impact runs | agent | P2.7 | — |
-| I | Scanner adapters HID / serial + enrolment CLI | agent | P2.2, P2.3, P2.8 | **scanners bought (plan §16 D1)** — ask me |
-| J | Forwarder to the site service | agent | P2.5 | **Phase 3 API from Windows** — do not start |
+| I | Scanner adapters HID / serial + scanner enrolment CLI | agent | P2.2, P2.3, P2.8 | **scanners bought (plan §16 D1)** — ask me |
+| J | MES enrolment (`--mes-enroll`) + forwarder from the spool to the site service (§4.6, §6) | agent | P2.5 | F. The service API is ready: FloorWatch `docs/MES_SERVICE_API.md` |
 
 If a package is blocked, say so and move to the next one. A and B are small;
 do them first: the Windows session needs A's field to build its side.
@@ -194,6 +196,40 @@ All in `<LinuxCNC config dir>/mw_data/` (the agent finds it through config key
 Status packet field `loop_lag_ms` = `{"p50": n, "p99": n, "max": n}` over the
 last 60 s of sampling-loop delays (ms, integers). Additive.
 
+### 4.6 Site service link (package J)
+
+The service side is done; its API is FloorWatch `docs/MES_SERVICE_API.md`
+(enrolment, `GET /v1/capabilities`, `POST /v1/events`, receipts, errors).
+Follow it exactly. Agent side:
+
+- **Enrolment CLI:** `lcnc-status-agent --mes-enroll https://<service>:8443
+  <code>` does the four steps of the API page: fetch the CA, **check its
+  fingerprint against the code before sending anything secret**, make the key and
+  CSR with the `openssl` command (add `openssl` to the `.deb` `Depends`), send the
+  code + CSR + `machine_uuid` over a connection that verifies the service with
+  that CA. Files in `~/linuxcnc-monitor-agent/mes/` (directory 0700, files 0600):
+  `client.key`, `client.crt`, `ca.crt`, `enrolment.json`
+  (`{"service_url", "site_id", "machine_id", "not_after"}`). It writes
+  `mes_service_url` into `config.yaml` only with the user's OK. `--check` shows
+  the service URL, site id and certificate expiry (never the key).
+- **Spool:** after enrolment `meta.site_id` is set (§4.4).
+- **Forwarder** (`agent_mes_forward.py`, own thread, never in the sampling
+  loop): `http.client.HTTPSConnection` with an `ssl` context holding
+  `client.crt` / `client.key` and trusting only `ca.crt` (host name checked; if
+  the service's certificate lacks the name used, the admin adds it with
+  `floorwatch-service server-cert`). `GET /v1/capabilities` at start and every
+  hour; forward only listed types, oldest first, within its limits (≤ 200
+  events, ≤ 256 KiB before gzip); mark rows acknowledged per receipt; 503 /
+  timeouts / broken connections → resend later, backoff 1 s → 5 min with
+  jitter. The feedback endpoint (`GET /v1/agents/{id}/feedback`, plan P2.5) does
+  not exist yet: skip it.
+- **Status field** `mes_link` = `{"state": "ok" | "offline" | "not_enrolled" |
+  "cert_expired" | "rejected", "last_ok_ms": n}` (`last_ok_ms` = last 200 from the
+  service, absent if never). Additive; PROTOCOL.md §4.9. FloorWatch will show it
+  next to "MES: ready".
+- Keys: `mes_service_url` (default `""` = not enrolled). `mes_enabled: false`
+  means no forwarding either.
+
 ## 5. Tests that must exist
 
 - A: identity created once and reused; damaged file kept and replaced; field in
@@ -203,13 +239,57 @@ last 60 s of sampling-loop delays (ms, integers). Additive.
   cursor advance — nothing lost or doubled); epoch change after a re-created
   database; pruning never passes `mes_ack.json`; every event passes the
   contract's `validate_event()`.
-- F: spool survives `kill -9` mid-write; budget full → new scans would be
-  rejected (`scan.rejected_local`, reason `spool_full` — tell me: the contract's
-  reason list has no `spool_full` yet, the Windows session must add it first).
+- F: spool survives `kill -9` mid-write; budget full → new scans are rejected
+  (`scan.rejected_local`, reason `spool_full`: in contract 1.1, FloorWatch
+  PR #39; this repo's copy is updated by PR #21).
+- J, against a fake server (unit tests) **and** against the real FloorWatch
+  service (§6; skip the test when `~/floorwatch` is not there):
+  - enrolment stops, **without sending the code**, when the CA's fingerprint
+    does not start with the code's last 16 hex digits;
+  - every receipt status marks the row acknowledged; 503, a timeout or a broken
+    connection mark nothing and the batch is resent with backoff;
+  - `kill -9` after the service committed but before the agent marked the rows:
+    after restart the resend answers `duplicate`, nothing is lost or doubled;
+  - only event types listed by `GET /v1/capabilities` are sent; others stay
+    pending;
+  - a revoked agent (`floorwatch-service revoke`) stops forwarding and shows
+    `mes_link.state = "rejected"`; an expired certificate shows `cert_expired`;
+  - batches never exceed the limits `capabilities` returns.
 - H: the loop never waits on the MES threads (a stalled spool does not raise
   `loop_lag_ms`).
 
-## 6. When a package is done
+## 6. Running the site service on this PC for testing (package J)
+
+The real service is FloorWatch's `floorwatch_service`. Run it **on the
+loopback only**, in a test folder, and stop it when done. It needs
+`cryptography` 42 or newer (Debian 12's `python3-cryptography` is older), so use
+a virtual environment; nothing is installed system-wide.
+
+```
+cd ~/floorwatch && git pull          # until FloorWatch #42 / #43 are merged: git checkout feat/service-tls
+python3 -m venv ~/fw-svc-venv
+~/fw-svc-venv/bin/pip install "cryptography>=42"
+export FWS="env PYTHONPATH=$HOME/floorwatch/src $HOME/fw-svc-venv/bin/python -m floorwatch_service --data $HOME/fw-service-test"
+$FWS init --name 127.0.0.1 --name localhost
+$FWS enroll-code --note test-agent        # prints the one-time code
+$FWS run --bind 127.0.0.1 --port 8443     # in its own terminal; Ctrl+C stops it
+```
+
+Then enrol the agent with `--mes-enroll https://127.0.0.1:8443 <code>` and set
+`mes_enabled: true` (config changes and the service restart need my OK). Look at
+what arrived:
+
+```
+sqlite3 ~/fw-service-test/ledger.db "SELECT type, count(*) FROM raw_events GROUP BY type"
+sqlite3 ~/fw-service-test/ledger.db "SELECT reason, count(*) FROM quarantine GROUP BY reason"
+```
+
+`$FWS revoke <machine_uuid>` tests the revoked path. When finished: stop the
+service, put the agent config back, delete `~/fw-service-test` (and the venv if
+you no longer need it). Never bind the test service to `0.0.0.0` or a real
+interface without asking me.
+
+## 7. When a package is done
 
 Report: what changed, test results (counts), what the user must do (restart the
 agent service, start AXIS for a MillWright check), anything that changes an
