@@ -63,6 +63,15 @@ journal_days: 14
 journal_min_free_mb: 100     # pause the journal when less disk than this is free
 journal_interval_s: 10      # journal at least this often while running
 journal_port: 5006          # UDP port the dashboard asks for history on (0 = off)
+journal_bind: ""            # listen on this address only, e.g. the machine-network card ("" = all)
+journal_allow: ""           # answer only these dashboard IPs, comma list ("" = any)
+
+# Site key: a shared secret for the whole plant, the same text in FloorWatch
+# (Settings -> Machines -> Site key). Every packet is then signed, and history
+# is given only to requests signed with it. 16+ characters. Keep this file
+# private (chmod 600). Roll out: set it in FloorWatch first, then on each
+# machine, then tick "Refuse unsigned machines" in FloorWatch.
+site_key: ""
 
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen

@@ -48,6 +48,7 @@ from typing import Any, Dict, List, Optional, Tuple
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, ROOT)
 
+from agent_auth import key_bytes, sign             # noqa: E402
 from agent_gcode import GcodeFileSender          # noqa: E402
 from agent_journal import Journal, JournalServer  # noqa: E402
 from agent_packets import PacketGate             # noqa: E402
@@ -75,8 +76,9 @@ class Sender:
     """One UDP socket for every machine, with optional loss / reordering."""
 
     def __init__(self, target: Tuple[str, int], drop: float, reorder: float,
-                 rng: random.Random) -> None:
+                 rng: random.Random, key: Optional[bytes] = None) -> None:
         self.target = target
+        self.key = key
         self.drop, self.reorder, self.rng = drop, reorder, rng
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if target[0].endswith(".255"):
@@ -86,7 +88,7 @@ class Sender:
 
     def raw(self, data: bytes) -> bool:
         try:
-            self.sock.sendto(data, self.target)
+            self.sock.sendto(sign(data, self.key), self.target)
             return True
         except OSError:
             return False
@@ -118,7 +120,8 @@ class SimMachine:
                                args.journal_interval, 14.0)
         self.port = args.journal_base_port + index if args.journal_base_port else 0
         self.server = JournalServer(self.journal.path, self.port, self.name,
-                                    self.journal.agent_id, bind_host=args.journal_host)
+                                    self.journal.agent_id, bind_host=args.journal_host,
+                                    key=key_bytes(getattr(args, "site_key", "")))
         if self.port:
             self.server.start()
         self.gate = PacketGate(args.poll, args.heartbeat)
@@ -329,7 +332,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         args.journal_host = "127.0.0.1" if target[0].startswith("127.") else ""
     rng = random.Random(args.seed)
     programs = sorted({p for pat in args.gcode for p in glob.glob(os.path.expanduser(pat))})
-    sender = Sender(target, args.drop, args.reorder, rng)
+    sender = Sender(target, args.drop, args.reorder, rng, key_bytes(getattr(args, "site_key", "")))
     machines = [SimMachine(i, args, rng, sender, programs[i % len(programs)] if programs else None)
                 for i in range(args.machines)]
     truth = args.truth or os.path.join(args.dir, "truth.json")
@@ -448,6 +451,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     r.add_argument("--journal-interval", type=float, default=10.0)
     r.add_argument("--gcode", nargs="*", default=[], help="program files / globs")
     r.add_argument("--gcode-resend", type=float, default=60.0)
+    r.add_argument("--site-key", default="", help="sign every packet with this site key (F07)")
     r.add_argument("--cycle", default="20,60", help="cycle length range, seconds")
     r.add_argument("--idle", default="3,15", help="time between cycles, seconds")
     r.add_argument("--abort-prob", type=float, default=0.05, help="per cycle")

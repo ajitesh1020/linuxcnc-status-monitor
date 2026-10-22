@@ -43,6 +43,9 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `journal_min_free_mb` | float | `100` | Below this much free disk the journal pauses (reported as `journal_state: "disk_low"`) so it never fills the disk LinuxCNC needs |
 | `journal_interval_s` | float | `10` | Journal at least this often while running |
 | `journal_port` | int | `5006` | UDP port the dashboard fetches history from; `0` = off |
+| `journal_bind` | string | `""` | Listen for history requests on this address only (e.g. the machine-network card's IP); `""` = all |
+| `journal_allow` | string | `""` | Answer history requests only from these dashboard IPs (comma list); `""` = any |
+| `site_key` | string | `""` | Shared secret for the plant (16+ characters, the same text in FloorWatch). Every packet is signed and history requests must be signed (PROTOCOL.md §8.1). Keep `config.yaml` private: `chmod 600` |
 | `read_error_channel` | bool | `false` | Also read LinuxCNC's NML error channel and send message text in `nml_errors`. **Leave off**: reading the channel removes each message, so the operator's GUI (AXIS, QtDragon, Gmoccapy…) may never show it. Faults are reported from status flags either way |
 
 ---

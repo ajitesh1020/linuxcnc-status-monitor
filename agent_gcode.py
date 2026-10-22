@@ -31,6 +31,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
+from agent_auth import SIG_RESERVE
+
 logger = logging.getLogger("lcnc_status_agent")
 
 # A packet stays below the usual 1500-byte Ethernet MTU minus IP/UDP headers.
@@ -157,7 +159,8 @@ class GcodeFileSender:
                 "machine_name": self._machine_name, "file_name": meta["file_name"],
                 "file_size": meta["file_size"], "file_modified_ms": meta["file_modified_ms"],
                 "chunk_index": 99999, "total_chunks": 99999, "content": ""}
-        overhead = len(json.dumps(head, ensure_ascii=False).encode("utf-8")) + 16
+        overhead = (len(json.dumps(head, ensure_ascii=False).encode("utf-8")) + 16
+                    + SIG_RESERVE)              # room for a site-key signature
         return head, split_content(content, max(64, MAX_PACKET_BYTES - overhead),
                                    self._chunk_size)
 

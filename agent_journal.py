@@ -43,6 +43,7 @@ Every status packet carries `agent_id`, `journal_seq` (newest seq) and
 `journal_port`, so a dashboard can tell exactly what it has missed.
 """
 
+import collections
 import json
 import logging
 import os
@@ -52,6 +53,8 @@ import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
+
+from agent_auth import sign, verify
 
 logger = logging.getLogger(__name__)
 
@@ -358,7 +361,8 @@ class JournalServer:
     """
 
     def __init__(self, path: str, port: int, machine_name: str, agent_id: str,
-                 max_replies_per_s: int = 50, bind_host: str = "") -> None:
+                 max_replies_per_s: int = 50, bind_host: str = "",
+                 key: Optional[bytes] = None, allow: Tuple[str, ...] = ()) -> None:
         self._path = path
         self._port = int(port)
         self._host = bind_host
@@ -369,6 +373,12 @@ class JournalServer:
         self._thread: Optional[threading.Thread] = None
         self._sock: Optional[socket.socket] = None
         self.bad_requests = 0   # requests rejected or that failed, for diagnostics
+        # With a site key a request must be signed and carry a fresh nonce
+        # (a replayed request is ignored); replies are signed.
+        self._key = key
+        self._allow = tuple(a for a in allow if a)   # only these IPs may ask (empty = any)
+        self._nonces: "collections.OrderedDict[str, None]" = collections.OrderedDict()
+        self.refused = 0        # unsigned / bad signature / replayed / not allowed
 
     @property
     def alive(self) -> bool:
@@ -435,9 +445,18 @@ class JournalServer:
     def _answer(self, conn: sqlite3.Connection, sock: socket.socket,
                 raw: bytes, addr: Any) -> bool:
         """Handle one request. Never raises. True if a reply was sent."""
+        if self._allow and (not addr or addr[0] not in self._allow):
+            self.refused += 1
+            return False
+        if self._key is not None and verify(raw, self._key) != "ok":
+            self.refused += 1
+            return False
         try:
-            reply = build_reply(conn, json.loads(raw.decode("utf-8")),
-                                self._name, self.agent_id)
+            request = json.loads(raw.decode("utf-8"))
+            if self._key is not None and not self._fresh_nonce(request):
+                self.refused += 1
+                return False
+            reply = build_reply(conn, request, self._name, self.agent_id)
         except Exception as exc:   # bad JSON, deep nesting, overflow, database error...
             self.bad_requests += 1
             logger.debug("Bad journal request from %s: %s: %s",
@@ -447,12 +466,21 @@ class JournalServer:
             self.bad_requests += 1
             return False
         try:
-            sock.sendto(json.dumps(reply, separators=(",", ":"),
-                                   default=str).encode("utf-8"), addr)
+            sock.sendto(sign(json.dumps(reply, separators=(",", ":"),
+                                        default=str).encode("utf-8"), self._key), addr)
             return True
         except (OSError, TypeError, ValueError) as exc:
             logger.debug("Journal reply to %s failed: %s", addr[0] if addr else "?", exc)
             return False
+
+    def _fresh_nonce(self, request: Any) -> bool:
+        nonce = request.get("nonce") if isinstance(request, dict) else None
+        if not isinstance(nonce, str) or not 8 <= len(nonce) <= 64 or nonce in self._nonces:
+            return False
+        self._nonces[nonce] = None
+        while len(self._nonces) > 4096:
+            self._nonces.popitem(last=False)
+        return True
 
     def _close_socket(self) -> None:
         if self._sock is not None:

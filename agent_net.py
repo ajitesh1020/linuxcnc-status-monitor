@@ -34,6 +34,8 @@ import subprocess
 import threading
 from typing import Iterable, List, Optional, Set, Tuple
 
+from agent_auth import sign
+
 logger = logging.getLogger(__name__)
 
 MESA_OUI = "00:60:1b"            # Mesa Electronics MAC prefix
@@ -139,8 +141,10 @@ def resolve_targets(setting: str, exclude: Iterable[str]) -> List[str]:
 class UdpSender:
     """Sends each payload to every current target. Never blocks on DNS."""
 
-    def __init__(self, setting: str, port: int, exclude_interfaces: str = "") -> None:
+    def __init__(self, setting: str, port: int, exclude_interfaces: str = "",
+                 key: Optional[bytes] = None) -> None:
         self._setting = setting
+        self._key = key                      # site key: every packet is signed
         self._port = int(port)
         self._exclude = [s.strip() for s in str(exclude_interfaces or "").split(",") if s.strip()]
         self._targets: List[str] = []
@@ -186,6 +190,7 @@ class UdpSender:
             self._sock = None
 
     def send(self, payload: bytes) -> bool:
+        payload = sign(payload, self._key)
         if self._sock is None:
             self._create_socket()
         if self._sock is None:

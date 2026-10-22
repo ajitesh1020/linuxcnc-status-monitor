@@ -16,6 +16,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   65,536 chunks. A program over either limit is not sent, and this is logged
   once instead of the dashboard warning on every resend.
 
+### Added — site key (review F07)
+
+- **`site_key`**: one shared secret per plant (the same text in FloorWatch).
+  Every packet — status, G-code chunks, history replies — is signed with
+  HMAC-SHA256 (`sig`, the last JSON member, PROTOCOL.md §8.1). History requests
+  must then be signed and carry a fresh `nonce`; a replayed request is ignored.
+  A dashboard without the key ignores `sig`, so it can be rolled out machine by
+  machine. Not encryption: packets can still be read on the network.
+- **`journal_bind`** (listen on one address) and **`journal_allow`** (answer
+  only these dashboard IPs) for the history port.
+- `config.yaml` is created readable by its owner only; the agent warns if it
+  holds a site key and others can read it, or if the key is under 16
+  characters. `--check` shows whether packets are signed.
+- `tools/fleet_sim.py run --site-key`.
+
 ### Changed (hardening, from the readiness review)
 
 - **The journal recovers by itself.** A database error used to switch the

@@ -101,10 +101,19 @@ def find_config(explicit: Optional[str] = None, create: bool = True) -> Optional
                 try:
                     os.makedirs(USER_CONFIG_DIR, exist_ok=True)
                     shutil.copyfile(tpl, USER_CONFIG)
+                    os.chmod(USER_CONFIG, 0o600)    # may hold the site key
                     return USER_CONFIG
                 except OSError:
                     break
     return None
+
+
+def readable_by_others(path: str) -> bool:
+    """True if a file is readable by group or others (POSIX)."""
+    try:
+        return os.name == "posix" and bool(os.stat(path).st_mode & 0o044)
+    except OSError:
+        return False
 
 
 def lock_path() -> str:

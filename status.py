@@ -119,11 +119,13 @@ except ImportError:
     )
     sys.exit(1)
 
+from agent_auth import MIN_KEY_CHARS, key_bytes
 from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
 from agent_packets import PacketGate, fault_signature
-from agent_runtime import USER_CONFIG_DIR, LinuxCNCWatch, find_config, single_instance
+from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
+                           single_instance)
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 from program_tracker import CycleLineTracker, ProgramScanner
 
@@ -156,7 +158,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "journal_days":              14.0,            # history kept on this PC for the dashboard
     "journal_interval_s":        10.0,            # journal at least this often while active
     "journal_min_free_mb":       100.0,           # pause the journal below this much free disk
-    "journal_port":              5006,            # UDP port the dashboard fetches history from (0 = off)
+    "journal_port":              5006,
+    "journal_bind":              "",              # history port listens on this address only ("" = all)
+    "journal_allow":             "",              # only these dashboard IPs may fetch history (comma list; "" = any)
+    "site_key":                  "",              # shared secret: sign every packet (same text in FloorWatch)            # UDP port the dashboard fetches history from (0 = off)
     "read_error_channel":        False,           # True = also read NML messages (may hide them from the GUI)
 }
 
@@ -719,6 +724,7 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
     sender = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
                        cfg["exclude_interfaces"])
     running = LinuxCNCWatch().alive()
+    key = key_bytes(cfg["site_key"])
     print(f"lcnc-status-agent {AGENT_VERSION}")
     print(f"  config file   : {cfg_path or '(none — built-in defaults)'}")
     print(f"  machine name  : {machine_name}")
@@ -728,7 +734,13 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
     print(f"  LinuxCNC      : {'running' if running else 'not running'}")
     print(f"  error channel : "
           f"{'READ (messages may not reach the operator GUI)' if cfg['read_error_channel'] else 'not read (default)'}")
-    print(f"  history port  : {cfg['journal_port'] or 'off'}")
+    print(f"  history port  : {cfg['journal_port'] or 'off'}"
+          + (f" on {cfg['journal_bind']}" if cfg["journal_bind"] else "")
+          + (f", only for {cfg['journal_allow']}" if cfg["journal_allow"] else ""))
+    print(f"  site key      : "
+          + ("not set — packets are not signed" if key is None else
+             f"set ({len(cfg['site_key'].strip())} characters) — packets are signed"
+             + ("  [TOO SHORT: use 16+]" if len(cfg["site_key"].strip()) < MIN_KEY_CHARS else "")))
     sender.close()
 
 
@@ -789,8 +801,15 @@ def main() -> None:
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     scanner       = ProgramScanner()
     state_machine = _CycleStateMachine(calculator, scanner)
+    site_key      = key_bytes(cfg["site_key"])
+    if site_key is not None and cfg_path and readable_by_others(cfg_path):
+        logger.warning("%s holds the site key but other users can read it: "
+                       "chmod 600 %s", cfg_path, cfg_path)
+    if site_key is not None and len(cfg["site_key"].strip()) < MIN_KEY_CHARS:
+        logger.warning("site_key is only %d characters; use at least %d.",
+                       len(cfg["site_key"].strip()), MIN_KEY_CHARS)
     sender        = UdpSender(cfg["monitor_pc_ip"], cfg["monitor_pc_port"],
-                              cfg["exclude_interfaces"])
+                              cfg["exclude_interfaces"], key=site_key)
     gcode_sender  = GcodeFileSender(cfg["gcode_chunk_size"], machine_name, PROTOCOL_VERSION,
                                     cfg["gcode_resend_s"])
     watch         = LinuxCNCWatch()
@@ -801,7 +820,10 @@ def main() -> None:
                             cfg["journal_interval_s"], cfg["journal_days"],
                             cfg["journal_min_free_mb"])
     journal_srv   = JournalServer(journal.path, cfg["journal_port"], machine_name,
-                                  journal.agent_id)
+                                  journal.agent_id, bind_host=cfg["journal_bind"].strip(),
+                                  key=site_key,
+                                  allow=tuple(a.strip() for a in
+                                              str(cfg["journal_allow"]).split(",")))
     # Wanted even if the journal could not be opened yet: it is retried.
     journal_srv_wanted = cfg["journal_port"] > 0
     if journal_srv_wanted and journal.agent_id:
