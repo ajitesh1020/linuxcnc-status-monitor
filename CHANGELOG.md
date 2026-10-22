@@ -26,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **The .deb was missing `agent_auth.py`** (site key, 1.7.0), so the installed
+  agent would not start. It and `agent_identity.py` are now packaged, and
+  `tests/test_packaging.py` fails if a module the agent imports is left out.
 - **Big G-code programs reach the dashboard** (review F05; MES plan P0.2). A
   program is sent if it has at most 32 MiB of text (33,554,432 characters) and
   splits into at most 80,000 frame-sized packets: the shared contract
