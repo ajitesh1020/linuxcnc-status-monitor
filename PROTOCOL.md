@@ -98,6 +98,7 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `agent_id` | string | Id of the agent's journal. Changes only if the journal file is deleted — then seq numbers restart |
 | `journal_seq` | integer | Seq of the newest journal entry at send time |
 | `journal_port` | integer | UDP port that answers history requests (§5a); `0` = not available (off, or the history server stopped — agent ≥ 1.6.0 restarts it within a minute) |
+| `journal_state` | string | Agent ≥ 1.7.0. `"ok"`; `"failing"` = the journal cannot be written (retried, up to every 5 min); `"disk_low"` = paused, less than `journal_min_free_mb` free. Not `"ok"` = history for this time will be missing; a dashboard should show that |
 
 ### 4.1b Stream identity (agent ≥ 1.6.0)
 
@@ -248,6 +249,19 @@ complete once all indices `0…total_chunks−1` are present. A missing chunk wi
 re-sent on the next file change; the agent also re-sends the whole file when the
 fingerprint changes.
 
+**Size limits (both sides).** A program is sent only if it is at most
+**32 MiB** (33,554,432 bytes, `file_size`) and splits into at most **65,536**
+chunks. A receiver must accept anything within both limits; the agent never sends
+more. With the default chunk size an ASCII program needs about one chunk per
+1,000 characters (about 34,000 for 32 MiB; about 48,000 with a 128-character
+machine name and 255-character file name, room being left in every chunk for a
+site-key signature, §8.1). A program over either limit is not
+sent at all; the agent logs this once (not on every resend) and status packets
+still name the file. Programs with many non-ASCII characters fit fewer characters
+per chunk and can reach the chunk limit before 32 MiB. A receiver keeps the chunks
+it already has between resends, so a big program completes over two or more
+resends even with some packet loss.
+
 ---
 
 ## 5a. History journal — request / reply
@@ -341,19 +355,56 @@ So since 1.6.0 the agent does **not** open the error channel unless
 
 ---
 
-## 8. Security (current & planned)
+## 8. Security
 
-- **Current (v1):** no authentication or encryption. Deploy only on a trusted,
-  isolated machine network. Bind the monitoring PC firewall to UDP `5005` from
-  the CNC subnet only.
-- **Planned (Phase 2):** an optional shared token in `config.yaml`, echoed in a
-  `token` field, so a receiver can reject packets from unexpected senders; and
-  optional bind-to-interface on the agent. When added, the token will be an
-  additive field and will **not** bump `proto` unless verification becomes
-  mandatory.
+Packets are **not encrypted**: anyone on the machine network can read them.
+Deploy on a dedicated machine network; never on an untrusted or
+internet-exposed one without a VPN or equivalent. The monitoring PC's firewall
+should accept UDP `5005` from the machine subnet only.
 
-Never place machine data on an untrusted or internet-exposed network without a
-VPN or equivalent.
+### 8.1 Site key (agent ≥ 1.7.0, optional)
+
+With `site_key` set in the agent's `config.yaml` (the same text in the
+dashboard), every datagram the agent sends — status, G-code chunks, history
+replies — is signed, and the history port answers only signed requests.
+
+```
+unsigned  {"type":"status",...,"packet_seq":7}
+signed    {"type":"status",...,"packet_seq":7,"sig":"<64 lowercase hex digits>"}
+sig       = HMAC-SHA256(key = site_key as UTF-8 bytes,
+                        msg = "lcnc-sig-v1\n" + the unsigned bytes)
+```
+
+- `sig` is always the **last** member, written as `,"sig":"…"}` at the very end
+  (`{"sig":"…"}` for an empty object). To verify, cut that text off the received
+  bytes, put the `}` back, and compare the HMAC over exactly those bytes — no
+  JSON re-encoding. A receiver without a key ignores the field.
+- A dashboard with the key should drop a packet whose signature is wrong. During
+  roll-out it may still accept **unsigned** packets; once every agent has the
+  key it should refuse them, or anyone can send unsigned packets in a machine's
+  name.
+- **History requests** (§5a) must then be signed and carry a `nonce` (a string
+  of 8–64 characters, new for every request, including retries). The agent
+  ignores a request with a nonce it has seen among the last 4,096, so a captured
+  request cannot be replayed. Replies are signed.
+- **Replays of status packets** are dropped by the stream order (§4.1b): a
+  packet whose `packet_seq` is not newer than one already accepted, or from a
+  session that has already been replaced, is stale. A dashboard remembers
+  replaced sessions only while it runs, so a captured old session could be
+  replayed after a dashboard restart; the next real packet supersedes it, and
+  the history backfill (§5a) corrects the counts.
+- The key proves a packet came from something that knows the key and was not
+  changed. It does **not** tell machines apart: anyone with the key can claim
+  any machine name. Treat it like a password; the agent warns if `config.yaml`
+  is readable by other users or the key is shorter than 16 characters.
+
+### 8.2 History port
+
+`journal_bind` makes the history port listen on one address only (e.g. the
+machine-network card); `journal_allow` (a comma list of dashboard IPs) makes it
+answer only those. A reply always goes to the address the request came from, so
+a request with a forged source address sends the history to that address, not
+to the forger.
 
 ---
 
@@ -366,6 +417,8 @@ VPN or equivalent.
 | 1 | 2026-09 | Additive: `partial_parts`, `partial_part_equiv`, `last_partial_pct`, `program_progress_pct`, `part_in_progress`, `gcode_tail_line`, per-joint `hard_limit`. `gcode_end_line` now points at M2/M30 rather than a trailing `%`. No version bump. |
 | 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
+| 1 | 2026-10 | Agent 1.7.0: optional site-key signature `sig` on every packet and history request, `nonce` in signed history requests (§8.1). Additive; no version bump. |
+| 1 | 2026-10 | Agent 1.7.0: `journal_state`; `agent_id` / `journal_seq` also sent while the journal is failing (last known values). G-code programs limited to 32 MiB / 65,536 chunks (§5). No version bump. |
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

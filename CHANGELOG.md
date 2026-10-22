@@ -6,6 +6,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Big G-code programs reach the dashboard** (review F05). The agent and
+  FloorWatch now agree on 32 MiB and 65,536 chunks per program (PROTOCOL.md §5);
+  FloorWatch used to refuse anything over 4,096 chunks (about 4 MB). Chunks are
+  now as large as one frame allows: with long machine or file names the
+  splitter used to halve to ~500 characters, which put a 32 MiB program over
+  65,536 chunks. A program over either limit is not sent, and this is logged
+  once instead of the dashboard warning on every resend.
+
+### Added — site key (review F07)
+
+- **`site_key`**: one shared secret per plant (the same text in FloorWatch).
+  Every packet — status, G-code chunks, history replies — is signed with
+  HMAC-SHA256 (`sig`, the last JSON member, PROTOCOL.md §8.1). History requests
+  must then be signed and carry a fresh `nonce`; a replayed request is ignored.
+  A dashboard without the key ignores `sig`, so it can be rolled out machine by
+  machine. Not encryption: packets can still be read on the network.
+- **`journal_bind`** (listen on one address) and **`journal_allow`** (answer
+  only these dashboard IPs) for the history port.
+- `config.yaml` is created readable by its owner only; the agent warns if it
+  holds a site key and others can read it, or if the key is under 16
+  characters. `--check` shows whether packets are signed.
+- `tools/fleet_sim.py run --site-key`.
+
+### Changed (hardening, from the readiness review)
+
+- **The journal recovers by itself.** A database error used to switch the
+  history off until the agent restarted. It is now reopened after 5 s, 10 s,
+  ... up to every 5 min. Below `journal_min_free_mb` (new, default 100) free
+  disk it pauses, so it never fills the disk LinuxCNC needs. Status packets
+  carry `journal_state` (`ok` / `failing` / `disk_low`); `agent_id` and
+  `journal_seq` are sent while it is failing too. SQLite waits at most 1 s
+  (was 5 s) in the sampling loop.
+- **Warnings are no longer thrown away.** Without `--dev` the agent used to
+  log nothing at all. Warnings and errors now go to
+  `~/linuxcnc-monitor-agent/agent.log` (1 MB x 3) and the systemd journal, each
+  message at most once a minute.
+- **Nothing in the sampling loop waits.** Programs over 1 MB are scanned on a
+  background thread (a 32 MiB program took 2.4 s); the loop waits for the
+  result only if a cycle starts or ends before the scan is done. The UDP socket
+  is non-blocking: a full send buffer drops that packet instead of stalling;
+  G-code chunks try three times.
+- **Restart mid-part** is covered by a test: the part is still counted (as a
+  Run From Here), no abort. Documented in TROUBLESHOOTING.md.
+- CI: actions pinned to commits, read-only by default, a separate publish job
+  for tags, `SHA256SUMS` with every package, and a published release is never
+  replaced.
+- `agent_gcode.py` licence header now matches the project (GPL-2.0-or-later).
+- `dist/` is ignored by git.
+
 ### Added
 
 - **Fleet simulator** `tools/fleet_sim.py` (a test tool; not installed by the

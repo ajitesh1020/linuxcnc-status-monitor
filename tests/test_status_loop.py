@@ -34,6 +34,9 @@ class FakeClock:
     def sleep(self, s):
         self.now += max(float(s), 0.001)
 
+    def perf_counter_ns(self):            # the cycle calculator's clock
+        return int(self.now * 1e9)
+
     def __getattr__(self, name):          # time_ns, time, ...
         return getattr(real_time, name)
 
@@ -71,13 +74,13 @@ def make_fake_linuxcnc(sc):
             self.joints = 2
             self.joint = [{"fault": False, "homed": True},
                           {"fault": False, "homed": True}]
+            self.file = ""
             for start, end, field, value in sc.faults:
                 if start <= t < end:
                     if field == "joint_fault":
                         self.joint[value] = dict(self.joint[value], fault=True)
                     else:
                         setattr(self, field, value)
-            self.file = ""
 
     class error_channel:
         def __init__(self):
@@ -131,6 +134,9 @@ class StatusLoopTests(unittest.TestCase):
             sc.status = status
             cfg = dict(status.DEFAULT_CONFIG, journal_port=0, **cfg_over)
             status.time = clock
+            import cycle_time_calculator
+            self.addCleanup(setattr, cycle_time_calculator, "time", cycle_time_calculator.time)
+            cycle_time_calculator.time = clock
             status.load_config = lambda path: cfg
             status.find_config = lambda arg: None
             status._configure_logging = lambda dev, c: None
@@ -153,6 +159,31 @@ class StatusLoopTests(unittest.TestCase):
         conn.close()
         # Seconds since start for each packet (packets carry wall time; use order).
         return sc, FakeSender.last.packets, journal
+
+    def test_every_packet_says_the_journal_is_ok(self):
+        _sc, packets, _ = self.run_agent([])
+        self.assertTrue(packets)
+        self.assertTrue(all(p["journal_state"] == "ok" for p in packets))
+
+    def test_agent_restarted_mid_part_still_counts_the_part(self):
+        # The agent (re)starts while a program is half way through (service
+        # restart, package upgrade). It cannot know the part's start, so it
+        # treats it as Run From Here: the part is counted when the program
+        # reaches M30, with no abort; its cycle time covers only what it saw.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        prog = os.path.join(tmp.name, "part.ngc")
+        with open(prog, "w") as f:
+            f.write("%\nG21 G90\n" + "".join(f"G1 X{i} F100\n" for i in range(20)) + "M30\n%\n")
+        running = [(0.0, 15.0, "task_mode", 2), (0.0, 15.0, "interp_state", 2),
+                   (0.0, 99.0, "file", prog)]
+        lines = [(0.0 + i * 0.5, 0.5 + i * 0.5, "motion_line", 12 + i) for i in range(11)]
+        lines.append((5.5, 99.0, "motion_line", 22))                  # last move
+        _sc, packets, _ = self.run_agent(running + lines, stop_at=25.0)
+        last = packets[-1]
+        self.assertEqual((last["parts_produced"], last["abort_count"]), (1, 0))
+        self.assertEqual(last["run_from_here_count"], 1)
+        self.assertFalse(last["part_in_progress"])
 
     def test_error_channel_is_not_opened_by_default(self):
         sc, packets, _ = self.run_agent([], nml=[(11, "Probe tripped")])

@@ -159,6 +159,92 @@ def _free_port():
     return port
 
 
+class _BrokenConn:
+    """A connection whose writes fail (disk error, locked file...)."""
+
+    def execute(self, *_a):
+        import sqlite3
+        raise sqlite3.OperationalError("disk I/O error")
+
+    def close(self):
+        pass
+
+
+class JournalRecoveryTests(unittest.TestCase):
+    """A database problem pauses the history; it no longer ends it until restart."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "journal.db")
+        self.free = 10 ** 12
+        self.j = aj.Journal(self.path, free_bytes=lambda _p: self.free)
+        self.addCleanup(self.j.close)
+
+    def test_a_failed_write_is_retried_with_backoff_and_recovers(self):
+        self.assertEqual(self.j.record(_pkt(1), now=0), 1)
+        self.j._conn = _BrokenConn()
+        with self.assertLogs("agent_journal", "WARNING") as logs:
+            self.assertIsNone(self.j.record(_pkt(2, parts_produced=1), now=1))
+            self.assertEqual(self.j.state, "failing")
+            self.assertIn("disk I/O error", self.j.error)
+            self.assertIsNone(self.j.record(_pkt(3, parts_produced=1), now=3))   # before 5 s
+            self.assertEqual(self.j.record(_pkt(4, parts_produced=1), now=7), 2)  # reopened
+        self.assertEqual(self.j.state, "ok")
+        self.assertEqual(len(logs.output), 2)                        # failing, recovered
+        self.assertIn("recovered", logs.output[1])
+
+    def test_the_retry_interval_doubles_up_to_five_minutes(self):
+        delays = []
+        for n in range(10):
+            self.j._conn = _BrokenConn()
+            self.j._retry_at = 0
+            with self.assertLogs("agent_journal", "WARNING"):
+                self.j.record(_pkt(n, parts_produced=n), now=1000.0 * n)
+            delays.append(self.j._retry_at - 1000.0 * n)
+            self.j.state = "ok"
+        self.assertEqual(delays[:3], [5.0, 10.0, 20.0])
+        self.assertEqual(delays[-1], aj.RETRY_MAX_S)
+
+    def test_a_journal_that_cannot_be_opened_at_start_is_opened_later(self):
+        blocker = os.path.join(self.tmp.name, "blocker")
+        open(blocker, "w").close()                         # a file where the folder should be
+        path = os.path.join(blocker, "journal.db")
+        with self.assertLogs("agent_journal", "WARNING"):
+            j = aj.Journal(path, free_bytes=lambda _p: self.free)
+        self.addCleanup(j.close)
+        self.assertEqual((j.state, j.agent_id, j.enabled), ("failing", "", False))
+        os.remove(blocker)
+        j._retry_at = 0
+        with self.assertLogs("agent_journal", "WARNING"):
+            self.assertEqual(j.record(_pkt(1), now=100), 1)
+        self.assertEqual(j.state, "ok")
+        self.assertTrue(j.agent_id)
+
+    def test_writes_pause_when_the_disk_is_nearly_full_and_resume_with_spare(self):
+        j = aj.Journal(self.path, min_free_mb=100, free_bytes=lambda _p: self.free)
+        self.addCleanup(j.close)
+        self.assertEqual(j.record(_pkt(1), now=0), 1)
+        self.free = 50_000_000
+        with self.assertLogs("agent_journal", "WARNING"):
+            self.assertIsNone(j.record(_pkt(2, parts_produced=1), now=61))
+        self.assertEqual(j.state, "disk_low")
+        self.free = 105_000_000                            # above 100 MB but not 10 % spare
+        self.assertIsNone(j.record(_pkt(3, parts_produced=1), now=122))
+        self.free = 200_000_000
+        with self.assertLogs("agent_journal", "WARNING"):
+            self.assertEqual(j.record(_pkt(4, parts_produced=1), now=183), 2)
+        self.assertEqual(j.state, "ok")
+
+    def test_the_disk_is_checked_once_a_minute_not_every_sample(self):
+        calls = []
+        j = aj.Journal(self.path, free_bytes=lambda p: calls.append(p) or 10 ** 12)
+        self.addCleanup(j.close)
+        for t in range(120):
+            j.record(_pkt(t), now=float(t))
+        self.assertEqual(len(calls), 2)
+
+
 class JournalServerTests(unittest.TestCase):
     def _serve(self, n=5):
         # Cleanups run last-in first-out: server and journal close before the
