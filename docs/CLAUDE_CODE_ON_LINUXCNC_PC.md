@@ -31,10 +31,13 @@ so far:
 | F02 | Delayed / reordered packets dropped; restarts recognised by `session_id`, ordered by `packet_seq` | agent `main` (PR #12) + FloorWatch PR #25 |
 | F03 | Missed history recovered from any `journal_seq` step; saved position never skips unstored history; failed fetches retried; pruned spans recorded in `history_gaps` | FloorWatch PR #25 |
 | F07 (part) | Implausible part-count jumps not expanded | FloorWatch PR #25 |
+| F05 | G-code programs up to 32 MiB / 65,536 chunks reach the dashboard; a program over the limit is logged once | agent PR #15 + FloorWatch's matching limit |
+| F07 | Optional `site_key`: every packet signed (HMAC-SHA256), history requests signed with a fresh nonce; `journal_bind` / `journal_allow` | agent PR #15 (FloorWatch must check `sig`) |
+| Hardening | Journal reopens itself after errors, pauses on low disk; `journal_state` in packets | agent PR #15 |
 | Bench find | G-code errors reported as `cmd_state` 3 / `cmd_serial` (agent) and shown as error events in FloorWatch | agent `main` (PR #12) + FloorWatch PR #25 |
 
-Still open, **not** for this session: F05 (G-code programs over ~4 MB are refused
-by FloorWatch — scenario K only *shows* it), F08 (OEE), most hardening items.
+Still open, **not** for this session: F08 (OEE), FloorWatch checking `site_key`
+signatures (F07), the remaining hardening items.
 
 The goal now: prove FloorWatch's history is **exact** under real agent code and
 bad networks, using one real agent plus 99 simulated agents on this PC, before
@@ -128,8 +131,9 @@ busy rates as in FLEET_TEST.md §3) to prove the setup, then the full scenarios.
   Work out which part of the chain lost or doubled it and report that.
 - **Known, not a failure**: scenario H — aborts may be 1 short for a machine
   whose first missed entry was an abort; scenario I — the pruned machine is short
-  by what was deleted; scenario K — FloorWatch refuses programs over 4096 chunks
-  (F05).
+  by what was deleted; scenario K — only programs over 32 MiB / 65,536 chunks are
+  refused (F05), logged once per program; a FloorWatch still on the old
+  4096-chunk limit refuses the 5 MB program.
 - The 30 s outage (F) and long outage (G) are the review's main F03 cases; give
   them extra attention.
 
@@ -142,4 +146,4 @@ busy rates as in FLEET_TEST.md §3) to prove the setup, then the full scenarios.
   with `git rev-parse --short HEAD` of both repos).
 - A short summary for the user: which scenarios passed exactly, any findings
   with evidence, and what is left (the real network between two PCs, Windows
-  reference-PC performance, F05, F08).
+  reference-PC performance, F08).
