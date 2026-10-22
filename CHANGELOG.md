@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **MES event contract `fw.mes.event/1`** vendored from FloorWatch
+  (`contracts/mes/v1/`, pinned in `contracts/mes/CONTRACT_SOURCE`; MES plan
+  P1.1). Nothing uses it yet; `tests/test_mes_contract.py` checks the copy is
+  unchanged and that its checker passes every example on this Python. Never
+  edit the copy: change FloorWatch's and run `tools/vendor_mes_contract.py`
+  there.
+
 ### Fixed
 
 - **Big G-code programs reach the dashboard** (review F05). The agent and

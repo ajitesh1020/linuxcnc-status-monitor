@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/tool.snapshot",
+  "title": "Tools in each head at run start",
+  "type": "object",
+  "required": [
+    "heads"
+  ],
+  "properties": {
+    "heads": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "required": [
+          "head",
+          "tool"
+        ],
+        "properties": {
+          "head": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 7
+          },
+          "tool": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 99999
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diameter": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[a-z][a-z_]{0,31}$"
+            },
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  }
+}

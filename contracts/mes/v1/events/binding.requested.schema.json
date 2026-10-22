@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/binding.requested",
+  "title": "Scans were bound to the next run at this machine (local UI)",
+  "type": "object",
+  "required": [
+    "scan_ids",
+    "fixture_positions"
+  ],
+  "properties": {
+    "scan_ids": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/uuid"
+      },
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true
+    },
+    "fixture_positions": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/position"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/uuid"
+      },
+      "description": "Fixture position name -> scan_id (each must be in scan_ids)."
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 128
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "position": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,32}$"
+    }
+  }
+}

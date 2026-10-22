@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fw.mes.event/1/execution.ended",
+  "title": "A program run ended",
+  "type": "object",
+  "required": [
+    "outcome",
+    "seconds"
+  ],
+  "properties": {
+    "outcome": {
+      "enum": [
+        "completed",
+        "aborted",
+        "interrupted_unknown"
+      ]
+    },
+    "seconds": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 31622400
+    },
+    "last_line": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "S": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 16,
+      "description": "Spindle speeds used (rpm), most used first."
+    },
+    "F": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "maxItems": 16,
+      "description": "Feed rates used (machine units/min), most used first."
+    },
+    "overrides": {
+      "type": "object",
+      "properties": {
+        "feed": {
+          "$ref": "#/$defs/ratio"
+        },
+        "rapid": {
+          "$ref": "#/$defs/ratio"
+        },
+        "spindle": {
+          "$ref": "#/$defs/ratio"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ratio": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 10
+    }
+  }
+}
