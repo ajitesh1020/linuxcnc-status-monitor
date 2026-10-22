@@ -36,6 +36,7 @@ Stale line numbers are ignored until they change after cycle start.
 import logging
 import os
 import re
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -130,16 +131,36 @@ class ProgramInfo:
 
 class ProgramScanner:
     """Keeps a ProgramInfo for the currently loaded file; rescans on change
-    (new path, or same path edited and reloaded)."""
+    (new path, or same path edited and reloaded).
 
-    def __init__(self) -> None:
+    A file over ``background_bytes`` is scanned on a background thread: a
+    32 MiB program takes seconds, and the sampling loop must not stall for it
+    (fault edges, cycle timing). Until the scan is done ``info`` is a blank
+    ProgramInfo for the new path; ``wait()`` blocks for the result, which the
+    cycle logic does only if a cycle starts or ends before the scan finished.
+    """
+
+    def __init__(self, background_bytes: int = 1_000_000) -> None:
         self.info = ProgramInfo()
         self._sig: tuple = ("", 0.0, 0)
+        self._background = background_bytes
+        self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._done.set()
+
+    @property
+    def pending(self) -> bool:
+        return not self._done.is_set()
+
+    def wait(self, timeout: Optional[float] = 30.0) -> None:
+        self._done.wait(timeout)
 
     def load(self, file_path: str) -> None:
         if not file_path:
             if self._sig[0]:
-                self.info, self._sig = ProgramInfo(), ("", 0.0, 0)
+                with self._lock:
+                    self.info, self._sig = ProgramInfo(), ("", 0.0, 0)
+                    self._done.set()
             return
         try:
             st = os.stat(file_path)
@@ -148,21 +169,36 @@ class ProgramScanner:
             sig = (file_path, 0.0, 0)
         if sig == self._sig:
             return
-        self._sig = sig
+        with self._lock:
+            self._sig = sig
+        if sig[2] > self._background:
+            with self._lock:
+                self.info = ProgramInfo(path=file_path)
+                self._done.clear()
+            threading.Thread(target=self._scan, args=(file_path, sig),
+                             name="program-scan", daemon=True).start()
+        else:
+            self._scan(file_path, sig)
+
+    def _scan(self, file_path: str, sig: tuple) -> None:
+        readable = True
         try:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-                self.info = ProgramInfo.from_lines(f, path=file_path)
+                info = ProgramInfo.from_lines(f, path=file_path)
         except OSError as exc:
             logger.error("Cannot read G-code file '%s': %s", file_path, exc)
-            self.info = ProgramInfo(path=file_path)
-            return
-        i = self.info
+            info, readable = ProgramInfo(path=file_path), False
+        with self._lock:
+            if sig != self._sig:
+                return                      # another file was loaded meanwhile
+            self.info = info
+            self._done.set()
         logger.debug(
             "Program scan: file=%s first_exec=%d first_move=%d tail_move=%d end=%d",
-            os.path.basename(file_path), i.first_exec_line, i.first_motion_line,
-            i.tail_line, i.end_line,
+            os.path.basename(file_path), info.first_exec_line, info.first_motion_line,
+            info.tail_line, info.end_line,
         )
-        if i.end_line == -1:
+        if readable and info.end_line == -1:
             logger.warning("No M2/M30 in '%s' — cycles cannot be counted as parts.",
                            os.path.basename(file_path))
 

@@ -146,6 +146,7 @@ class UdpSender:
         self._targets: List[str] = []
         self._sock: Optional[socket.socket] = None
         self._stop = threading.Event()
+        self.would_block = 0                 # packets dropped because the buffer was full
         self._create_socket()
         self.refresh()                       # first resolution inline
         self._thread = threading.Thread(target=self._refresh_loop,
@@ -178,6 +179,8 @@ class UdpSender:
             self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            # Never wait in the sampling loop: a full send buffer drops the packet.
+            self._sock.setblocking(False)
         except OSError as exc:
             logger.error("Failed to create UDP socket: %s", exc)
             self._sock = None
@@ -187,14 +190,17 @@ class UdpSender:
             self._create_socket()
         if self._sock is None:
             return False
-        ok = False
+        ok = busy = False
         for ip in self._targets:
             try:
                 self._sock.sendto(payload, (ip, self._port))
                 ok = True
+            except BlockingIOError:
+                busy = True                  # send buffer full: this packet is dropped
+                self.would_block += 1
             except OSError as exc:
                 logger.warning("UDP send to %s failed: %s", ip, exc)
-        if not ok:
+        if not ok and not busy:
             self._create_socket()
         return ok
 

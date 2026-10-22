@@ -91,10 +91,43 @@ got. That's intended — finish it with Run From Here to count it as a part.
 
 ---
 
-## Log files (dev mode only)
+## The agent was restarted while a part was running
+
+A service restart or package upgrade in the middle of a part does not lose it.
+The new agent cannot see where the part started, so it treats the rest as a
+**Run From Here**: when the program reaches M2/M30 the part is counted, with no
+abort. Two side effects: `run_from_here_count` goes up by one, and that part's
+cycle time covers only what the new agent saw. A power cut stops LinuxCNC as
+well; finish the part with Run From Here after the restart and it is counted.
+
+---
+
+## History is not kept (`journal_state`)
+
+Status packets carry `journal_state`. Anything but `ok` means the machine's
+history is not being written, so a dashboard that is closed meanwhile cannot
+fetch that time later:
+
+| `journal_state` | Meaning | What to do |
+|---|---|---|
+| `failing` | `journal.db` cannot be opened or written (permissions, disk error, locked) | See `agent.log`; the agent retries after 5 s, 10 s, ... up to every 5 min |
+| `disk_low` | Less than `journal_min_free_mb` (100 MB) free | Free disk space; writes resume by themselves |
+
+---
+
+## Log files
+
+Warnings and errors (network, journal, history server), at most once a minute
+each:
 
 ```bash
-tail -f /tmp/cnc_status.log
+tail -f ~/linuxcnc-monitor-agent/agent.log
+journalctl --user -u lcnc-status-agent -f
 ```
 
-Production runs are silent by design.
+Everything, including each packet sent, in dev mode:
+
+```bash
+systemctl --user stop lcnc-status-agent
+lcnc-status-agent --dev            # also writes /tmp/cnc_status.log
+```

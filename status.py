@@ -48,11 +48,11 @@ only on a machine whose GUI does not need those messages, after checking.
 
 Logging (v1.3.0)
 -----------------
-  Production (no --dev):
-    - Root logger level = WARNING
-    - NullHandler only — no file, no console, zero output
-    - All logger.debug() / logger.info() calls are zero-overhead
-    - Log file is never created or written to
+  Production (no --dev), since 1.7.0:
+    - Root logger level = WARNING; debug / info calls cost nothing
+    - Warnings and errors go to ~/linuxcnc-monitor-agent/agent.log (1 MB x 3)
+      and to stderr (journalctl --user -u lcnc-status-agent)
+    - The same message is let through at most once a minute (_RateLimit)
 
   Dev mode (--dev or CNC_DEV_MODE=1):
     - Root logger level = DEBUG
@@ -155,6 +155,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "log_backup_count":          3,
     "journal_days":              14.0,            # history kept on this PC for the dashboard
     "journal_interval_s":        10.0,            # journal at least this often while active
+    "journal_min_free_mb":       100.0,           # pause the journal below this much free disk
     "journal_port":              5006,            # UDP port the dashboard fetches history from (0 = off)
     "read_error_channel":        False,           # True = also read NML messages (may hide them from the GUI)
 }
@@ -294,11 +295,41 @@ def _handle_signal(signum: int, _frame) -> None:
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+class _RateLimit(logging.Filter):
+    """Lets the same message (logger, level, text) through once per ``every_s``;
+    the next one that gets through says how many were held back. A fault that
+    repeats every sample cannot flood the log or the systemd journal."""
+
+    def __init__(self, every_s: float = 60.0, clock=time.monotonic) -> None:
+        super().__init__()
+        self._every, self._clock = every_s, clock
+        self._seen: Dict[tuple, list] = {}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        key = (record.name, record.levelno, str(record.msg))
+        now = self._clock()
+        seen = self._seen.get(key)
+        if seen is not None and now - seen[0] < self._every:
+            seen[1] += 1
+            return False
+        if seen is not None and seen[1]:
+            record.msg = f"{record.msg} [{seen[1]} similar held back]"
+        if len(self._seen) > 512:
+            self._seen.clear()
+        self._seen[key] = [now, 0]
+        return True
+
+
+WARN_LOG_FILE = os.path.join(USER_CONFIG_DIR, "agent.log")
+
+
 def _configure_logging(dev_mode: bool, cfg: Dict[str, Any]) -> None:
     """
     Production (no --dev):
-        root = WARNING + NullHandler only.
-        No file created. No console output. Zero overhead on all log calls.
+        warnings and errors only, rate-limited, to ~/linuxcnc-monitor-agent/agent.log
+        (1 MB x 3) and to stderr (the systemd journal:
+        journalctl --user -u lcnc-status-agent). A lost network or a failing
+        journal must be visible without debug mode.
 
     Dev mode (--dev or CNC_DEV_MODE=1):
         root = DEBUG + console StreamHandler + rotating file handler.
@@ -307,7 +338,21 @@ def _configure_logging(dev_mode: bool, cfg: Dict[str, Any]) -> None:
 
     if not dev_mode:
         root.setLevel(logging.WARNING)
-        root.addHandler(logging.NullHandler())
+        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                                datefmt="%Y-%m-%d %H:%M:%S")
+        err = logging.StreamHandler(sys.stderr)
+        err.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        handlers: List[logging.Handler] = [err]
+        try:
+            os.makedirs(os.path.dirname(WARN_LOG_FILE), exist_ok=True)
+            handlers.append(logging.handlers.RotatingFileHandler(
+                WARN_LOG_FILE, maxBytes=1_000_000, backupCount=3, encoding="utf-8"))
+            handlers[-1].setFormatter(fmt)
+        except OSError as exc:
+            print(f"[WARNING] Cannot open {WARN_LOG_FILE}: {exc}", file=sys.stderr)
+        for h in handlers:
+            h.addFilter(_RateLimit())   # one each: a shared one would starve the second
+            root.addHandler(h)
         return
 
     root.setLevel(logging.DEBUG)
@@ -437,6 +482,11 @@ class _CycleStateMachine:
         is_idle      = not is_running and not is_paused
         motion_line  = int(_safe_get(stat, "motion_line", 0) or 0)
         current_line = int(_safe_get(stat, "current_line", 0) or 0)
+
+        if self._scanner.pending and (is_running or is_paused or self._state != self.IDLE):
+            # A cycle needs the landmarks of a program still being scanned
+            # (only right after loading a big file): wait for them.
+            self._scanner.wait()
 
         if self._state == self.IDLE:
             if is_running:
@@ -748,11 +798,13 @@ def main() -> None:
     # History kept on this PC so a dashboard that was closed / off can fetch
     # what it missed (agent_journal.py).
     journal       = Journal(os.path.join(USER_CONFIG_DIR, "journal.db"),
-                            cfg["journal_interval_s"], cfg["journal_days"])
+                            cfg["journal_interval_s"], cfg["journal_days"],
+                            cfg["journal_min_free_mb"])
     journal_srv   = JournalServer(journal.path, cfg["journal_port"], machine_name,
                                   journal.agent_id)
-    journal_srv_wanted = journal.enabled and cfg["journal_port"] > 0
-    if journal_srv_wanted:
+    # Wanted even if the journal could not be opened yet: it is retried.
+    journal_srv_wanted = cfg["journal_port"] > 0
+    if journal_srv_wanted and journal.agent_id:
         journal_srv.start()
     last_journal_restart: float = time.monotonic()
 
@@ -891,7 +943,13 @@ def main() -> None:
         # Keep the history server running: a stopped server is reported as
         # journal_port 0 (no history) and restarted every JOURNAL_RESTART_S.
         # ------------------------------------------------------------------
-        if (journal_srv_wanted and not journal_srv.alive
+        if journal_srv_wanted and journal.agent_id != journal_srv.agent_id:
+            # The journal was (re)created: serve the new file under its id.
+            journal_srv.stop()
+            journal_srv.agent_id = journal.agent_id
+            last_journal_restart = now
+            journal_srv.start()
+        elif (journal_srv_wanted and journal.agent_id and not journal_srv.alive
                 and now - last_journal_restart >= JOURNAL_RESTART_S):
             last_journal_restart = now
             logger.warning("Journal server stopped — restarting.")
@@ -991,7 +1049,10 @@ def main() -> None:
         # Journal it, and tell the dashboard how far the journal goes
         # ------------------------------------------------------------------
         journal.record(payload, now)
-        if journal.enabled:
+        # "ok", "failing" (cannot write; retried) or "disk_low" (paused):
+        # anything but "ok" means history is not being kept right now.
+        payload["journal_state"] = journal.state
+        if journal.agent_id:
             payload["agent_id"]     = journal.agent_id
             payload["journal_seq"]  = journal.last_seq
             # 0 = history cannot be fetched right now (server off or stopped).

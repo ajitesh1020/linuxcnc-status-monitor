@@ -60,6 +60,7 @@ log_file: "/tmp/cnc_status.log"
 # dashboard can fetch what it missed while it was closed, the office PC was
 # off, or the network was down. About 1 MB per day of production.
 journal_days: 14
+journal_min_free_mb: 100     # pause the journal when less disk than this is free
 journal_interval_s: 10      # journal at least this often while running
 journal_port: 5006          # UDP port the dashboard asks for history on (0 = off)
 

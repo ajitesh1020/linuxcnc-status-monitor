@@ -98,6 +98,7 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 | `agent_id` | string | Id of the agent's journal. Changes only if the journal file is deleted — then seq numbers restart |
 | `journal_seq` | integer | Seq of the newest journal entry at send time |
 | `journal_port` | integer | UDP port that answers history requests (§5a); `0` = not available (off, or the history server stopped — agent ≥ 1.6.0 restarts it within a minute) |
+| `journal_state` | string | Agent ≥ 1.7.0. `"ok"`; `"failing"` = the journal cannot be written (retried, up to every 5 min); `"disk_low"` = paused, less than `journal_min_free_mb` free. Not `"ok"` = history for this time will be missing; a dashboard should show that |
 
 ### 4.1b Stream identity (agent ≥ 1.6.0)
 
@@ -378,6 +379,7 @@ VPN or equivalent.
 | 1 | 2026-09 | Additive: `partial_parts`, `partial_part_equiv`, `last_partial_pct`, `program_progress_pct`, `part_in_progress`, `gcode_tail_line`, per-joint `hard_limit`. `gcode_end_line` now points at M2/M30 rather than a trailing `%`. No version bump. |
 | 1 | 2026-09 | Transport: default addressing is LAN broadcast; `machine_name` defaults to the hostname. Receivers should drop exact duplicates (same machine + `ts`). No version bump. |
 | 1 | 2026-09 | Additive: history journal — `agent_id`, `journal_seq`, `journal_port` in status packets; `journal_request` / `journal` packets (§5a). No version bump. |
+| 1 | 2026-10 | Agent 1.7.0: `journal_state`; `agent_id` / `journal_seq` also sent while the journal is failing (last known values). G-code programs limited to 32 MiB / 65,536 chunks (§5). No version bump. |
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

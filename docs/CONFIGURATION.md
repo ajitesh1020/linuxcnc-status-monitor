@@ -40,6 +40,7 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `log_max_bytes` | int | `5242880` | Rotate the log after this many bytes (dev mode) |
 | `log_backup_count` | int | `3` | Rotated logs to keep (dev mode) |
 | `journal_days` | float | `14` | Days of history kept on this PC for the dashboard |
+| `journal_min_free_mb` | float | `100` | Below this much free disk the journal pauses (reported as `journal_state: "disk_low"`) so it never fills the disk LinuxCNC needs |
 | `journal_interval_s` | float | `10` | Journal at least this often while running |
 | `journal_port` | int | `5006` | UDP port the dashboard fetches history from; `0` = off |
 | `read_error_channel` | bool | `false` | Also read LinuxCNC's NML error channel and send message text in `nml_errors`. **Leave off**: reading the channel removes each message, so the operator's GUI (AXIS, QtDragon, Gmoccapy…) may never show it. Faults are reported from status flags either way |

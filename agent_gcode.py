@@ -1,5 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# Copyright (c) 2025-2026 Ajitesh Kannojia (CNC Tool Tech)
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
 # This file is part of linuxcnc-status-monitor. It is free software under the
-# GNU GPL v3 or later; see LICENSE.
+# GNU General Public License v2 or later. See the LICENSE file for details.
 """Streams the loaded G-code program to the dashboard (PROTOCOL.md §5).
 
 Why this is its own module, and not simple:
@@ -31,6 +37,7 @@ logger = logging.getLogger("lcnc_status_agent")
 MAX_PACKET_BYTES = 1400
 RETRY_AFTER_FAILURE_S = 10.0
 PACE_S = 0.001                  # between packets: about 1 MB/s at most
+SEND_TRIES = 3                  # per packet (the socket never blocks)
 
 # End-to-end limits agreed with the dashboard (PROTOCOL.md §5).
 MAX_PROGRAM_BYTES = 32 * 1024 * 1024
@@ -176,7 +183,12 @@ class GcodeFileSender:
                 return
             ok = True
             for packet in self._encode(head, pieces):
-                if not send(packet):
+                for attempt in range(SEND_TRIES):    # a full buffer drains in milliseconds
+                    if send(packet):
+                        break
+                    if attempt + 1 < SEND_TRIES:
+                        time.sleep(0.02)
+                else:
                     ok = False
                 if self._pace_s:
                     time.sleep(self._pace_s)

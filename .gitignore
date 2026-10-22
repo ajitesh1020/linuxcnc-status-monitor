@@ -11,3 +11,6 @@ venv/
 
 # Logs
 *.log
+
+# Built packages (packaging/deb/build.sh)
+dist/

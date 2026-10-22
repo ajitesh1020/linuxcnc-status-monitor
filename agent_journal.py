@@ -113,53 +113,121 @@ def _change_key(c: Dict[str, Any]) -> Tuple:
 
 
 def _open(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path, timeout=5.0, check_same_thread=False)
+    # A short busy wait: the writer runs in the sampling loop, and WAL readers
+    # (the history server) never block it anyway.
+    conn = sqlite3.connect(path, timeout=1.0, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
     return conn
 
 
-class Journal:
-    """Writer side — used from the agent's main loop only. Never raises: on
-    any database problem it logs once and switches itself off."""
+RETRY_FIRST_S = 5.0             # reopen a failed journal after this long, doubling...
+RETRY_MAX_S = 300.0             # ...up to this
+DISK_CHECK_S = 60.0             # how often free disk space is checked
 
-    def __init__(self, path: str, interval_s: float = 10.0, retain_days: float = 14.0) -> None:
+
+def _free_bytes(path: str) -> Optional[int]:
+    try:
+        st = os.statvfs(os.path.dirname(os.path.abspath(path)) or ".")
+        return st.f_bavail * st.f_frsize
+    except (OSError, AttributeError):   # no statvfs on Windows
+        return None
+
+
+class Journal:
+    """Writer side — used from the agent's main loop only. Never raises.
+
+    ``state`` is reported to the dashboard (``journal_state``):
+      "ok"        writing normally
+      "failing"   the database cannot be opened or written; reopened after
+                  5 s, 10 s, ... up to every 5 min, so a passing problem (a
+                  locked file, a remounted disk) does not end the history
+      "disk_low"  less than ``min_free_mb`` free: writes pause, so the journal
+                  never fills the disk LinuxCNC needs; they resume with 10 % spare
+    Packets not journalled meanwhile are missing from the history.
+    """
+
+    def __init__(self, path: str, interval_s: float = 10.0, retain_days: float = 14.0,
+                 min_free_mb: float = 100.0, free_bytes=_free_bytes) -> None:
         self.path = path
         self._interval = max(1.0, float(interval_s))
         self._retain_ms = int(max(1.0, float(retain_days)) * 86_400_000)
+        self._min_free = int(max(0.0, float(min_free_mb)) * 1_000_000)
+        self._free_bytes = free_bytes
         self._last_key: Optional[Tuple] = None
         self._last_write = 0.0
         self._last_prune = 0.0
+        self._last_disk_check = -1e18
+        self._retry_at = 0.0
+        self._backoff = RETRY_FIRST_S
         self.last_seq = 0
         self.agent_id = ""
+        self.state = "ok"
+        self.error = ""
         self._conn: Optional[sqlite3.Connection] = None
-        try:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            self._conn = _open(path)
-            row = self._conn.execute("SELECT value FROM meta WHERE key='agent_id'").fetchone()
-            if row:
-                self.agent_id = row[0]
-            else:
-                self.agent_id = uuid.uuid4().hex
-                self._conn.execute("INSERT INTO meta VALUES ('agent_id', ?)", (self.agent_id,))
-                self._conn.commit()
-            self.last_seq = self._conn.execute(
-                "SELECT COALESCE(MAX(seq), 0) FROM entries").fetchone()[0]
-        except (OSError, sqlite3.Error) as exc:
-            logger.warning("Journal disabled (%s): %s", path, exc)
-            self._conn = None
+        self._open_db(time.monotonic())
 
     @property
     def enabled(self) -> bool:
         return self._conn is not None
 
+    def _open_db(self, now: float) -> bool:
+        try:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            conn = _open(self.path)
+            row = conn.execute("SELECT value FROM meta WHERE key='agent_id'").fetchone()
+            if row:
+                agent_id = row[0]
+            else:
+                agent_id = uuid.uuid4().hex
+                conn.execute("INSERT INTO meta VALUES ('agent_id', ?)", (agent_id,))
+                conn.commit()
+            last_seq = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM entries").fetchone()[0]
+        except (OSError, sqlite3.Error) as exc:
+            self._fail(now, f"cannot open {self.path}: {exc}")
+            return False
+        self._conn, self.agent_id, self.last_seq = conn, agent_id, last_seq
+        return True
+
+    def _fail(self, now: float, message: str) -> None:
+        if self.state != "failing":
+            logger.warning("Journal failing (history not kept until it recovers): %s", message)
+        self.close()
+        self.state, self.error = "failing", message[:200]
+        self._retry_at = now + self._backoff
+        self._backoff = min(self._backoff * 2, RETRY_MAX_S)
+
+    def _disk_ok(self, now: float) -> bool:
+        if now - self._last_disk_check < DISK_CHECK_S:
+            return self.state != "disk_low"
+        self._last_disk_check = now
+        free = self._free_bytes(self.path) if self._min_free else None
+        if free is None:
+            return self.state != "disk_low"
+        if self.state == "disk_low":
+            if free < self._min_free * 1.1:
+                return False
+            logger.warning("Journal: disk space back (%d MB free); writing again.",
+                           free // 1_000_000)
+            self.state, self.error = ("ok" if self._conn else "failing"), ""
+            return True
+        if free < self._min_free:
+            logger.warning("Journal paused: only %d MB free on the disk (needs %d MB).",
+                           free // 1_000_000, self._min_free // 1_000_000)
+            self.state, self.error = "disk_low", f"{free // 1_000_000} MB free"
+            return False
+        return True
+
     def record(self, payload: Dict[str, Any], now: Optional[float] = None) -> Optional[int]:
         """Journal this packet if it changed something that matters or the
         interval has passed. Returns the new seq, or None if not written."""
-        if self._conn is None:
-            return None
         now = time.monotonic() if now is None else now
+        if not self._disk_ok(now):
+            return None
+        if self._conn is None:
+            if now < self._retry_at or not self._open_db(now):
+                return None
         c = compact(payload)
         key = _change_key(c)
         due = (key != self._last_key or bool(c.get("nml_errors"))
@@ -173,9 +241,11 @@ class Journal:
                 (ts, json.dumps(c, separators=(",", ":"), default=str)))
             self._conn.commit()
         except sqlite3.Error as exc:
-            logger.warning("Journal write failed, disabling: %s", exc)
-            self._conn = None
+            self._fail(now, f"write failed: {exc}")
             return None
+        if self.state == "failing":
+            logger.warning("Journal recovered; history is kept again.")
+        self.state, self.error, self._backoff = "ok", "", RETRY_FIRST_S
         self.last_seq = cur.lastrowid
         self._last_key = key
         self._last_write = now
@@ -293,7 +363,7 @@ class JournalServer:
         self._port = int(port)
         self._host = bind_host
         self._name = machine_name
-        self._agent_id = agent_id
+        self.agent_id = agent_id         # updated by the agent if the journal is recreated
         self._max_rate = max_replies_per_s
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -367,7 +437,7 @@ class JournalServer:
         """Handle one request. Never raises. True if a reply was sent."""
         try:
             reply = build_reply(conn, json.loads(raw.decode("utf-8")),
-                                self._name, self._agent_id)
+                                self._name, self.agent_id)
         except Exception as exc:   # bad JSON, deep nesting, overflow, database error...
             self.bad_requests += 1
             logger.debug("Bad journal request from %s: %s: %s",
