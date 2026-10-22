@@ -17,14 +17,16 @@
         "too_long",
         "timeout",
         "control_chars",
-        "disconnected"
-      ]
+        "disconnected",
+        "spool_full"
+      ],
+      "description": "spool_full (added in contract 1.1): the scan was read completely but the agent's MES spool is at its disk budget, so it was not stored; the operator panel shows it red. Consumers that do not know a reason keep the event as an unknown rejection."
     },
     "partial_len": {
       "type": "integer",
       "minimum": 0,
       "maximum": 1048576,
-      "description": "Bytes received before it was rejected (the data itself is not kept)."
+      "description": "Bytes received before it was rejected (the data itself is not kept); for spool_full the length of the whole scan."
     }
   },
   "$defs": {

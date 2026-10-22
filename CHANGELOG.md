@@ -14,6 +14,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   unchanged and that its checker passes every example on this Python. Never
   edit the copy: change FloorWatch's and run `tools/vendor_mes_contract.py`
   there.
+- MES contract copy updated to 1.1: `scan.rejected_local` reason `spool_full`
+  (for the spool, MES plan P2.4).
 
 ### Fixed
 
