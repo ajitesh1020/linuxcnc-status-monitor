@@ -15,12 +15,15 @@ Why this is its own module, and not simple:
   dashboard keeps what it already has, so this costs it nothing.
 * A big program is sent from a background thread, paced, so the status loop is
   never held up and the dashboard's socket buffer is not flooded.
+* A dashboard holds at most ``MAX_PROGRAM_BYTES`` / ``MAX_CHUNKS`` per program
+  (PROTOCOL.md §5). A program over either limit is not sent at all, and not
+  again on every resend: the dashboard would refuse it anyway.
 """
 import json
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger("lcnc_status_agent")
 
@@ -29,18 +32,31 @@ MAX_PACKET_BYTES = 1400
 RETRY_AFTER_FAILURE_S = 10.0
 PACE_S = 0.001                  # between packets: about 1 MB/s at most
 
+# End-to-end limits agreed with the dashboard (PROTOCOL.md §5).
+MAX_PROGRAM_BYTES = 32 * 1024 * 1024
+MAX_CHUNKS = 65_536
+
 Fingerprint = Tuple[str, int, int]
 
 
 def split_content(content: str, budget: int, max_chars: int) -> List[str]:
     """Cut ``content`` in pieces whose JSON-escaped UTF-8 form is at most ``budget`` bytes."""
+    def fits(piece: str) -> bool:
+        return len(json.dumps(piece, ensure_ascii=False).encode("utf-8")) <= budget
+
     pieces: List[str] = []
     pos, n = 0, len(content)
     while pos < n:
         take = min(max_chars, n - pos)
-        while take > 1 and len(json.dumps(content[pos:pos + take],
-                                          ensure_ascii=False).encode("utf-8")) > budget:
-            take //= 2
+        if not fits(content[pos:pos + take]):
+            lo, hi = 1, take - 1        # largest piece that fits, so chunks stay few (F05)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if fits(content[pos:pos + mid]):
+                    lo = mid
+                else:
+                    hi = mid - 1
+            take = lo
         pieces.append(content[pos:pos + take])
         pos += take
     return pieces or [""]
@@ -65,17 +81,21 @@ class GcodeFileSender:
         self._sent_at = 0.0
         self._retry_at = 0.0
         self._generation = 0            # bumped by reset(): an old send must not mark success
+        self._too_big: Optional[Fingerprint] = None   # over a limit: never sent
 
     def reset(self) -> None:
         """Forget what was sent so the file goes out again after a LinuxCNC restart."""
         with self._lock:
             self._sent_fingerprint = None
             self._retry_at = 0.0
+            self._too_big = None
             self._generation += 1
 
     def _due(self, fp: Fingerprint, now: float) -> bool:
         with self._lock:
             if self._worker is not None and self._worker.is_alive():
+                return False
+            if fp == self._too_big:
                 return False
             if now < self._retry_at:
                 return False
@@ -90,6 +110,9 @@ class GcodeFileSender:
             return
         now = self._clock()
         if not self._due(fp, now):
+            return
+        if meta["file_size"] > MAX_PROGRAM_BYTES:
+            self._refuse(fp, f"{meta['file_size']} bytes (limit {MAX_PROGRAM_BYTES})")
             return
         try:
             with open(file_path, "r", encoding="utf-8", errors="replace") as f:
@@ -114,25 +137,45 @@ class GcodeFileSender:
         else:
             self._run(meta, fp, content, send, generation)
 
-    def packets(self, meta: Dict[str, Any], content: str) -> List[bytes]:
+    def _refuse(self, fp: Fingerprint, why: str) -> None:
+        with self._lock:
+            if self._too_big == fp:
+                return
+            self._too_big = fp
+        logger.warning("G-code file %s not sent: %s. The dashboard shows no program text "
+                       "for it.", fp[0], why)
+
+    def _pieces(self, meta: Dict[str, Any], content: str) -> Tuple[Dict[str, Any], List[str]]:
         head = {"type": "gcode_file", "proto": self._proto, "ts": 0,
                 "machine_name": self._machine_name, "file_name": meta["file_name"],
                 "file_size": meta["file_size"], "file_modified_ms": meta["file_modified_ms"],
                 "chunk_index": 99999, "total_chunks": 99999, "content": ""}
         overhead = len(json.dumps(head, ensure_ascii=False).encode("utf-8")) + 16
-        pieces = split_content(content, max(64, MAX_PACKET_BYTES - overhead), self._chunk_size)
-        out = []
+        return head, split_content(content, max(64, MAX_PACKET_BYTES - overhead),
+                                   self._chunk_size)
+
+    @staticmethod
+    def _encode(head: Dict[str, Any], pieces: List[str]) -> Iterator[bytes]:
         for idx, piece in enumerate(pieces):
             head.update(ts=int(time.time_ns() // 1_000_000), chunk_index=idx,
                         total_chunks=len(pieces), content=piece)
-            out.append(json.dumps(head, ensure_ascii=False).encode("utf-8"))
-        return out
+            yield json.dumps(head, ensure_ascii=False).encode("utf-8")
+
+    def packets(self, meta: Dict[str, Any], content: str) -> List[bytes]:
+        return list(self._encode(*self._pieces(meta, content)))
 
     def _run(self, meta: Dict[str, Any], fp: Fingerprint, content: str,
              send: Callable[[bytes], bool], generation: int) -> None:
         try:
+            head, pieces = self._pieces(meta, content)
+            if len(pieces) > MAX_CHUNKS:
+                with self._lock:
+                    current = generation == self._generation
+                if current:
+                    self._refuse(fp, f"{len(pieces)} chunks (limit {MAX_CHUNKS})")
+                return
             ok = True
-            for packet in self.packets(meta, content):
+            for packet in self._encode(head, pieces):
                 if not send(packet):
                     ok = False
                 if self._pace_s:

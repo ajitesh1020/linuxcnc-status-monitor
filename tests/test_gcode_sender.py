@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -185,6 +186,81 @@ class FailureTests(SenderCase):
         self.clock.t += agent_gcode.RETRY_AFTER_FAILURE_S + 1
         self.push(path, meta)
         self.assertEqual(self.net.program(), "G0 X0\n")
+
+
+class SplitTests(unittest.TestCase):
+    def test_pieces_are_as_large_as_the_budget_allows(self):
+        text = "G1 X1.234 Y5.678 F900\n" * 500
+        pieces = agent_gcode.split_content(text, 800, 1000)
+        self.assertEqual("".join(pieces), text)
+        size = lambda p: len(json.dumps(p, ensure_ascii=False).encode("utf-8"))
+        for p in pieces[:-1]:
+            self.assertLessEqual(size(p), 800)
+            self.assertGreater(size(p + "G"), 800 - 2)         # one more char would not fit
+
+    def test_a_character_that_never_fits_alone_still_moves_on(self):
+        self.assertEqual(agent_gcode.split_content("ab", 1, 10), ["a", "b"])
+
+
+class SizeLimitTests(SenderCase):
+    """F05: a program the dashboard would refuse is not sent, and not every resend."""
+
+    def test_the_agreed_limits(self):
+        self.assertEqual(agent_gcode.MAX_PROGRAM_BYTES, 32 * 1024 * 1024)
+        self.assertEqual(agent_gcode.MAX_CHUNKS, 65_536)
+
+    def test_a_32_mib_ascii_program_stays_within_the_chunk_limit(self):
+        # Worst ordinary case: default chunk size, longest machine / file names.
+        sender = agent_gcode.GcodeFileSender(1000, "M" * 128, 1, threaded=False)
+        meta = {"file_name": "f" * 255 + ".ngc", "file_size": agent_gcode.MAX_PROGRAM_BYTES,
+                "file_modified_ms": 1}
+        _head, pieces = sender._pieces(meta, "G1 X1.234 Y5.678 F900\n" * 2000)
+        per_chunk = min(len(p) for p in pieces[:-1])
+        self.assertLessEqual(agent_gcode.MAX_PROGRAM_BYTES / per_chunk, agent_gcode.MAX_CHUNKS)
+
+    def test_a_file_over_the_size_limit_is_not_read_or_sent(self):
+        path, meta = self.write("G0 X0\n" * 100)
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100), \
+                self.assertLogs("lcnc_status_agent", "WARNING") as logs:
+            self.push(path, meta)
+        self.assertEqual(self.net.packets, [])
+        self.assertIn("not sent", logs.output[0])
+
+    def test_too_many_chunks_is_not_sent(self):
+        path, meta = self.write("G0 X0\n" * 20000)            # 120 KB → > 100 chunks
+        with mock.patch.object(agent_gcode, "MAX_CHUNKS", 100), \
+                self.assertLogs("lcnc_status_agent", "WARNING"):
+            self.push(path, meta)
+        self.assertEqual(self.net.packets, [])
+
+    def test_refused_once_not_on_every_resend(self):
+        path, meta = self.write("G0 X0\n" * 100)
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100):
+            with self.assertLogs("lcnc_status_agent", "WARNING") as logs:
+                for _ in range(5):
+                    self.push(path, meta)
+                    self.clock.t += 61
+            self.assertEqual(len(logs.output), 1)
+        self.assertEqual(self.net.packets, [])
+
+    def test_a_smaller_version_of_the_file_goes_out(self):
+        path, meta = self.write("G0 X0\n" * 100)
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100), \
+                self.assertLogs("lcnc_status_agent", "WARNING"):
+            self.push(path, meta)
+            path, meta = self.write("G0 X1\n", name="part.ngc")
+            meta["file_modified_ms"] += 1                       # same second on some filesystems
+            self.push(path, meta)
+        self.assertEqual(self.net.program(), "G0 X1\n")
+
+    def test_reset_tries_a_refused_file_again(self):
+        path, meta = self.write("G0 X0\n" * 100)
+        with mock.patch.object(agent_gcode, "MAX_PROGRAM_BYTES", 100), \
+                self.assertLogs("lcnc_status_agent", "WARNING") as logs:
+            self.push(path, meta)
+            self.sender.reset()
+            self.push(path, meta)
+        self.assertEqual(len(logs.output), 2)
 
 
 class ThreadedTests(unittest.TestCase):

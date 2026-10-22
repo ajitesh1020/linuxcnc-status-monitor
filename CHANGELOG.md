@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Big G-code programs reach the dashboard** (review F05). The agent and
+  FloorWatch now agree on 32 MiB and 65,536 chunks per program (PROTOCOL.md §5);
+  FloorWatch used to refuse anything over 4,096 chunks (about 4 MB). Chunks are
+  now as large as one frame allows: with long machine or file names the
+  splitter used to halve to ~500 characters, which put a 32 MiB program over
+  65,536 chunks. A program over either limit is not sent, and this is logged
+  once instead of the dashboard warning on every resend.
+
 ### Added
 
 - **Fleet simulator** `tools/fleet_sim.py` (a test tool; not installed by the

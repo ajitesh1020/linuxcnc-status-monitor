@@ -248,6 +248,18 @@ complete once all indices `0…total_chunks−1` are present. A missing chunk wi
 re-sent on the next file change; the agent also re-sends the whole file when the
 fingerprint changes.
 
+**Size limits (both sides).** A program is sent only if it is at most
+**32 MiB** (33,554,432 bytes, `file_size`) and splits into at most **65,536**
+chunks. A receiver must accept anything within both limits; the agent never sends
+more. With the default chunk size an ASCII program needs about one chunk per
+1,000 characters (about 34,000 for 32 MiB; about 44,000 with a 128-character
+machine name and 255-character file name). A program over either limit is not
+sent at all; the agent logs this once (not on every resend) and status packets
+still name the file. Programs with many non-ASCII characters fit fewer characters
+per chunk and can reach the chunk limit before 32 MiB. A receiver keeps the chunks
+it already has between resends, so a big program completes over two or more
+resends even with some packet loss.
+
 ---
 
 ## 5a. History journal — request / reply
