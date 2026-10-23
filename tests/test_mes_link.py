@@ -2,6 +2,7 @@
 Run: python -m unittest -v test_mes_link
 """
 import hashlib
+from contextlib import closing
 import json
 import os
 import queue
@@ -52,7 +53,7 @@ class MillWright:
             if os.path.exists(p):
                 os.unlink(p)
         self.epoch = str(uuid.uuid4())
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:     # closed here, not by the GC later
             db.executescript(MW_SCHEMA)
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("INSERT INTO state VALUES ('outbox_epoch', ?), ('station_id', ?)",
@@ -63,7 +64,7 @@ class MillWright:
         return os.path.join(self.mw_data, "millwright.db")
 
     def add(self, n):
-        with sqlite3.connect(self.db) as db:
+        with closing(sqlite3.connect(self.db)) as db, db:
             for _ in range(n):
                 seq = (db.execute("SELECT seq FROM sqlite_sequence WHERE name='mw_outbox'").fetchone() or (0,))[0] + 1
                 body = mw_event(seq, self.epoch)

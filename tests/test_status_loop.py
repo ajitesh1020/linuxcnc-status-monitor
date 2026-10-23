@@ -153,7 +153,7 @@ class StatusLoopTests(unittest.TestCase):
             status.find_config = lambda arg: None
             status._configure_logging = lambda dev, c: None
             status._parse_args = lambda: types.SimpleNamespace(
-                dev=False, config=None, check=False)
+                dev=False, config=None, check=False, mes_enroll=None)
             status.single_instance = lambda: object()
             status.USER_CONFIG_DIR = tmp.name
             status.UdpSender = FakeSender
@@ -285,6 +285,7 @@ class StatusLoopTests(unittest.TestCase):
         _, packets, _ = self.run_agent([])
         self.assertTrue(all(p["mes_spool"] == {"pending": 0, "bytes": 0, "state": "off"} for p in packets))
         self.assertTrue(all("features" not in p for p in packets))
+        self.assertTrue(all("mes_link" not in p for p in packets))
 
     def test_mes_spool_state_and_features_when_enabled(self):
         _, packets, _ = self.run_agent([], mes_enabled=True)
@@ -292,6 +293,7 @@ class StatusLoopTests(unittest.TestCase):
             self.assertEqual(p["features"], ["mes1"])
             self.assertEqual((p["mes_spool"]["state"], p["mes_spool"]["pending"]), ("ok", 0))
             self.assertGreater(p["mes_spool"]["bytes"], 0)
+            self.assertEqual(p["mes_link"], {"state": "not_enrolled"})   # mes_service_url not set
 
     def _program(self):
         tmp = tempfile.TemporaryDirectory()

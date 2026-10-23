@@ -41,6 +41,11 @@ class DebContentsTests(unittest.TestCase):
                      "events/*.schema.json"):
             self.assertIn(name, text)
 
+    def test_deb_depends_on_openssl_for_mes_enrolment(self):
+        with open(os.path.join(ROOT, "packaging", "deb", "control.in"), encoding="utf-8") as f:
+            depends = [l for l in f if l.startswith("Depends:")][0]
+        self.assertIn("openssl", depends)
+
 
 if __name__ == "__main__":
     unittest.main()

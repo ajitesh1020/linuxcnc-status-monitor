@@ -8,6 +8,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **MES enrolment and forwarder `agent_mes_forward.py`** (MES plan P2.5,
+  package J; key `mes_service_url`). `lcnc-status-agent --mes-enroll
+  https://<service>:8443 <code>` fetches the site CA and stops — without
+  sending the code — unless its SHA-256 fingerprint starts with the code's last
+  16 hex digits; makes the key and CSR with the `openssl` command (new `.deb`
+  dependency); enrols over TLS that trusts only that CA; keeps `client.key`,
+  `client.crt`, `ca.crt` and `enrolment.json` in `~/linuxcnc-monitor-agent/mes/`
+  (0700 / 0600); writes `mes_service_url` into `config.yaml` only when asked
+  and confirmed. A forwarder thread (never the sampling loop) checks
+  `GET /v1/capabilities` at start and hourly, sends only listed event types,
+  oldest first, within the service's limits (gzip over 1 KiB), and marks rows
+  acknowledged per receipt; 503, timeouts and broken connections mark nothing
+  and resend with backoff 1 s → 5 min with jitter; 413 halves the batch; a
+  revoked or expired certificate stops forwarding until the machine is enrolled
+  again. After enrolment the spool's `site_id` is set. Status packets carry
+  `mes_link` (PROTOCOL.md §4.9); `--check` shows the service, site and
+  certificate expiry. Tests against a fake service and, when FloorWatch is
+  there, the real `floorwatch_service` (incl. `kill -9` between the service's
+  commit and the spool update: resent, answered `duplicate`, nothing lost or
+  doubled).
+
 - **`monitor_interface`** (MES plan P0.5, review F07): send status and G-code
   packets only on one network card. The socket is bound to the card's IPv4
   address (no root needed), `auto` broadcasts on that card only, and a fixed IP

@@ -3,7 +3,7 @@ Version: @VERSION@
 Section: misc
 Priority: optional
 Architecture: all
-Depends: python3 (>= 3.7), iproute2, systemd
+Depends: python3 (>= 3.7), iproute2, systemd, openssl
 Recommends: python3-yaml
 Suggests: linuxcnc-uspace
 Maintainer: Ajitesh Kannojia <aji.ajitesh1020@gmail.com>

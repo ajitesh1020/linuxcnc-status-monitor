@@ -126,6 +126,7 @@ from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
 import agent_mes_spool
 import agent_mes_link
+import agent_mes_forward
 import queue
 from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
@@ -172,6 +173,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mes_enabled":               False,           # MES capture (spool, MillWright outbox); False = nothing MES runs
     "mes_spool_mb":              1024.0,          # disk budget of the MES spool (~/linuxcnc-monitor-agent/mes_spool.db)
     "mes_millwright_config":     "",              # LinuxCNC config dir holding MillWright's mw_data/ ("" = no MillWright)
+    "mes_service_url":           "",              # site service, e.g. https://10.0.0.5:8443 ("" = not enrolled: nothing forwarded)
 }
 
 JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
@@ -724,6 +726,11 @@ def _parse_args() -> argparse.Namespace:
         "--check", action="store_true", default=False,
         help="Print config file, machine name, send targets and LinuxCNC state, then exit.",
     )
+    parser.add_argument(
+        "--mes-enroll", nargs=2, metavar=("URL", "CODE"), default=None,
+        help="Enrol this machine with the MES site service (https://<service>:8443) using the "
+             "one-time code from 'floorwatch-service enroll-code', then exit.",
+    )
     parser.add_argument("--version", action="version",
                         version=f"lcnc-status-agent {AGENT_VERSION} (protocol {PROTOCOL_VERSION})")
     return parser.parse_args()
@@ -758,7 +765,46 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
           + ("not set — packets are not signed" if key is None else
              f"set ({len(cfg['site_key'].strip())} characters) — packets are signed"
              + ("  [TOO SHORT: use 16+]" if len(cfg["site_key"].strip()) < MIN_KEY_CHARS else "")))
+    print(f"  MES           : {'on' if cfg['mes_enabled'] else 'off (mes_enabled: false)'}")
+    print(f"  site service  : "
+          + agent_mes_forward.describe(agent_mes_forward.mes_dir(USER_CONFIG_DIR), cfg["mes_service_url"]))
     sender.close()
+
+
+def _run_enroll(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str,
+                url: str, code: str) -> int:
+    """--mes-enroll: enrol with the site service; offer to set mes_service_url."""
+    id_path = agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR)
+    machine_uuid = agent_identity.load_or_create(id_path)
+    directory = agent_mes_forward.mes_dir(USER_CONFIG_DIR)
+    print(f"Enrolling {machine_name} ({machine_uuid or 'no machine_uuid'}) with {url} ...")
+    try:
+        doc = agent_mes_forward.enroll(url, code, machine_uuid or "", machine_name, directory)
+    except agent_mes_forward.EnrolError as exc:
+        print(f"Enrolment failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"Enrolled: site {doc['site_id']}, certificate valid until "
+          f"{time.strftime('%Y-%m-%d', time.gmtime((doc.get('not_after') or 0) // 1000))}.")
+    print(f"Files in {directory} (key never leaves this machine).")
+    target = cfg_path or os.path.join(USER_CONFIG_DIR, "config.yaml")
+    if cfg["mes_service_url"].strip() == doc["service_url"]:
+        print(f"mes_service_url is already {doc['service_url']} in {target}.")
+    else:
+        answer = ""
+        if sys.stdin.isatty():
+            try:
+                answer = input(f"Set mes_service_url: \"{doc['service_url']}\" in {target}? [y/N] ")
+            except EOFError:
+                answer = ""
+        if answer.strip().lower() in ("y", "yes"):
+            agent_mes_forward.set_config_value(target, "mes_service_url", doc["service_url"])
+            print("Written.")
+        else:
+            print(f"Not written. To forward, add to {target}:\n  mes_service_url: \"{doc['service_url']}\"")
+    if not cfg["mes_enabled"]:
+        print("Note: mes_enabled is false: nothing MES runs until it is true.")
+    print("Then restart the agent:  systemctl --user restart lcnc-status-agent")
+    return 0
 
 
 def _resolve_dev_mode(args: argparse.Namespace) -> bool:
@@ -792,6 +838,8 @@ def main() -> None:
     if args.check:
         _run_check(cfg_path, cfg, machine_name)
         return
+    if args.mes_enroll:
+        sys.exit(_run_enroll(cfg_path, cfg, machine_name, *args.mes_enroll))
 
     # One agent per user: a second copy would double-count parts.
     lock = single_instance()
@@ -920,6 +968,13 @@ def main() -> None:
         mes_link = agent_mes_link.CycleLink(mw_data, mes_facts)
         mes_worker = agent_mes_link.MesWorker(mes_spool, mw_data, mes_facts)
         mes_worker.start()
+    # Forwarder to the site service (agent_mes_forward.py): own thread; the
+    # loop only copies its status dict into packets.
+    mes_forwarder = None
+    if mes_spool:
+        mes_forwarder = agent_mes_forward.Forwarder(
+            mes_spool, cfg["mes_service_url"], agent_mes_forward.mes_dir(USER_CONFIG_DIR), machine_uuid)
+        mes_forwarder.start()
     mes_counts = (0, 0)              # parts / aborts when the current cycle started
     packet_seq:              int   = 0
     last_sample_time:        float = 0.0
@@ -1153,6 +1208,8 @@ def main() -> None:
         payload["mes_spool"] = dict(mes_spool.stats) if mes_spool else agent_mes_spool.status_off()
         if mes_spool:
             payload["features"] = ["mes1"]
+        if mes_forwarder:
+            payload["mes_link"] = dict(mes_forwarder.status)
         journal.record(payload, now)
         # "ok", "failing" (cannot write; retried) or "disk_low" (paused):
         # anything but "ok" means history is not being kept right now.
@@ -1194,6 +1251,8 @@ def main() -> None:
         calculator.abort_cycle()
     journal_srv.stop()
     journal.close()
+    if mes_forwarder:
+        mes_forwarder.stop()
     if mes_worker:
         mes_worker.stop()
     if mes_spool:
