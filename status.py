@@ -124,6 +124,7 @@ import agent_identity
 from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
+import agent_mes_spool
 from agent_packets import PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
                            single_instance)
@@ -165,6 +166,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "journal_allow":             "",              # only these dashboard IPs may fetch history (comma list; "" = any)
     "site_key":                  "",              # shared secret: sign every packet (same text in FloorWatch)            # UDP port the dashboard fetches history from (0 = off)
     "read_error_channel":        False,           # True = also read NML messages (may hide them from the GUI)
+    "mes_enabled":               False,           # MES capture (spool, MillWright outbox); False = nothing MES runs
+    "mes_spool_mb":              1024.0,          # disk budget of the MES spool (~/linuxcnc-monitor-agent/mes_spool.db)
 }
 
 JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
@@ -881,6 +884,23 @@ def main() -> None:
     # counting status packets within it, so a delayed or reordered packet can be
     # told apart from a newer one whatever the wall clock does.
     session_id:              str   = uuid.uuid4().hex[:16]
+
+    # MES spool (agent_mes_spool.py): opened here, never touched by the loop
+    # below except for its stats (PROTOCOL.md §4.9).
+    mes_spool = None
+    if cfg["mes_enabled"]:
+        if not machine_uuid:
+            logger.error("mes_enabled is on but there is no machine_uuid: MES stays off.")
+        else:
+            try:
+                mes_spool = agent_mes_spool.Spool(
+                    os.path.join(USER_CONFIG_DIR, "mes_spool.db"), machine_uuid, session_id,
+                    AGENT_VERSION, cfg["mes_spool_mb"])
+                mes_spool.prune()
+                logger.info("MES spool open: %s", mes_spool.stats)
+            except Exception as exc:
+                logger.error("MES spool cannot be opened (%s): MES stays off.", exc)
+                mes_spool = None
     packet_seq:              int   = 0
     last_sample_time:        float = 0.0
     pending_nml_errors:      list  = []
@@ -1083,6 +1103,9 @@ def main() -> None:
         # ------------------------------------------------------------------
         if machine_uuid:    # absent only if identity.json cannot be written
             payload["machine_uuid"] = machine_uuid
+        payload["mes_spool"] = dict(mes_spool.stats) if mes_spool else agent_mes_spool.status_off()
+        if mes_spool:
+            payload["features"] = ["mes1"]
         journal.record(payload, now)
         # "ok", "failing" (cannot write; retried) or "disk_low" (paused):
         # anything but "ok" means history is not being kept right now.
@@ -1124,6 +1147,8 @@ def main() -> None:
         calculator.abort_cycle()
     journal_srv.stop()
     journal.close()
+    if mes_spool:
+        mes_spool.close()
     sender.close()
     logger.info("CNC Status Monitor stopped cleanly.")
 

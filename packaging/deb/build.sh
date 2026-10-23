@@ -26,10 +26,17 @@ install -d "$STAGE/DEBIAN" "$STAGE/usr/bin" "$SHARE" "$DOC" "$STAGE/usr/lib/syst
 # Program
 for f in status.py cycle_time_calculator.py program_tracker.py agent_net.py \
          agent_runtime.py agent_journal.py agent_gcode.py agent_packets.py \
-         agent_auth.py agent_identity.py \
+         agent_auth.py agent_identity.py agent_mes_spool.py \
          config.example.yaml; do
     install -m 0644 "$ROOT/$f" "$SHARE/$f"
 done
+# MES event contract (agent_mes_spool.py checks every event with it): the
+# checker, catalogue and schemas, byte for byte; no fixtures or docs.
+install -d "$SHARE/contracts/mes/v1/events"
+for f in validate.py catalogue.json envelope.schema.json MANIFEST.sha256; do
+    install -m 0644 "$ROOT/contracts/mes/v1/$f" "$SHARE/contracts/mes/v1/$f"
+done
+install -m 0644 "$ROOT"/contracts/mes/v1/events/*.schema.json "$SHARE/contracts/mes/v1/events/"
 install -m 0755 "$ROOT/packaging/lcnc-status-agent" "$STAGE/usr/bin/lcnc-status-agent"
 install -m 0644 "$ROOT/packaging/lcnc-status-agent.service" \
     "$STAGE/usr/lib/systemd/user/lcnc-status-agent.service"

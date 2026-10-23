@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **MES spool `agent_mes_spool.py`** (MES plan P2.4). `mes_enabled` (default
+  `false`: nothing MES runs) opens `~/linuxcnc-monitor-agent/mes_spool.db`
+  (WAL, `synchronous=FULL`; tables `meta`, `spool`, `cursors` as the plan).
+  Every event is checked with the vendored contract's `validate_event()` and
+  stored as its `encode()` bytes; events from another producer (MillWright's
+  outbox) are stored unchanged, in one transaction with that source's cursor.
+  A new epoch when the database is created again or restored from an older
+  copy (sidecar `mes_spool.producer.json`), so a `producer.seq` is never used
+  twice. Budget `mes_spool_mb` (1024): warning at 90 %, at 100 % new events are
+  refused, never dropped; acked rows kept 7 days, pending rows never pruned.
+  Status packets carry `mes_spool` and `features: ["mes1"]` (PROTOCOL.md §4.9).
+  The .deb ships the contract's checker and schemas.
 - **Stable machine identity `machine_uuid`** (MES plan P0.6). Made once on the
   first start in `~/linuxcnc-monitor-agent/identity.json` (mode 0600, written
   atomically; key `machine_uuid_file`) and sent in every status packet and

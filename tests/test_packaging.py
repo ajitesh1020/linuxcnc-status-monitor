@@ -34,6 +34,13 @@ class DebContentsTests(unittest.TestCase):
         self.assertEqual(sorted(needed - listed), [],
                          "add these to the file list in packaging/deb/build.sh")
 
+    def test_build_ships_the_mes_contract_checker_and_schemas(self):
+        with open(os.path.join(ROOT, "packaging", "deb", "build.sh"), encoding="utf-8") as f:
+            text = f.read()
+        for name in ("validate.py", "catalogue.json", "envelope.schema.json", "MANIFEST.sha256",
+                     "events/*.schema.json"):
+            self.assertIn(name, text)
+
 
 if __name__ == "__main__":
     unittest.main()
