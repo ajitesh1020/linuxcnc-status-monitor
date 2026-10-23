@@ -30,6 +30,7 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `monitor_pc_ip` | string | `"auto"` | Where to send: `auto` (LAN broadcast), an IP, a host name, or a comma-separated mix. See [NETWORK.md](NETWORK.md) |
 | `monitor_pc_port` | int | `5005` | UDP port the dashboard listens on |
 | `exclude_interfaces` | string | `""` | Interfaces never to broadcast on, comma-separated. The Mesa `hm2_eth` interface is skipped automatically |
+| `monitor_interface` | string | `""` | Send status only on this interface (e.g. `enp2s0`): from its IPv4 address, broadcast only on it, fixed targets only if routed through it. Nothing is sent while it is missing / down / the Mesa card / excluded. `""` = any interface. See [NETWORK.md](NETWORK.md#restricted-pilot-network) |
 | `machine_name` | string | `""` | Name shown in the dashboard; empty = the PC's hostname. Must be unique per machine |
 | `machine_uuid_file` | string | `""` | Where the machine's permanent id is kept; empty = `~/linuxcnc-monitor-agent/identity.json`. Made on the first start, never changed after; keep it in backups. Deleting it makes the dashboard see a new machine (PROTOCOL.md §4.1b) |
 | `poll_interval_s` | float | `1.0` | Seconds between status packets while active |

@@ -31,6 +31,9 @@ It never broadcasts on:
 - loopback / VPN point-to-point links;
 - anything listed in `exclude_interfaces`.
 
+With `monitor_interface` set, it sends only on that one card — see
+[Restricted pilot network](#restricted-pilot-network).
+
 `lcnc-status-agent --check` prints exactly where packets are going.
 
 Traffic is small: ~2 KB per second per running machine, one packet per 30 s
@@ -82,6 +85,53 @@ monitor_pc_ip: "office-pc.local"          # host name, re-resolved every 30 s
 monitor_pc_ip: "192.168.0.50"             # fixed IP (use a router DHCP reservation)
 monitor_pc_ip: "auto, 10.20.0.15"         # broadcast AND a remote dashboard
 ```
+
+## Restricted pilot network
+
+For a pilot in a real plant (industrial readiness review, finding F07), keep
+the monitoring traffic on its own network and say exactly who may talk to
+whom. Status packets are not encrypted: anyone on the network can read them,
+and without a site key anyone can pretend to be a machine.
+
+1. **A dedicated monitoring network** (its own switch or VLAN) for the LinuxCNC
+   PCs and the dashboard PC, with no route to it from untrusted networks (guest
+   Wi-Fi, the internet). The Mesa card stays on its own card and is never part
+   of it.
+2. **Send on one interface only** — the card on the monitoring network:
+
+   ```yaml
+   monitor_interface: "enp2s0"     # the monitoring-network card, NOT the Mesa card
+   monitor_pc_ip: "192.168.50.10"  # the dashboard PC (or "auto" = broadcast on enp2s0 only)
+   ```
+
+   The agent then sends from that card's address, broadcasts only on that card
+   (never the 255.255.255.255 fallback), and drops any target the kernel would
+   route out of another card (logged). If the card is missing, down, has no
+   IPv4 address, is listed in `exclude_interfaces` or has a Mesa board on it,
+   **nothing is sent** until that is fixed (re-checked every 30 s). No root
+   rights are needed.
+3. **History port on the same card, for the dashboard only:**
+
+   ```yaml
+   journal_bind: "192.168.50.21"   # this PC's address on enp2s0
+   journal_allow: "192.168.50.10"  # the dashboard PC
+   ```
+
+4. **Site key** on every machine and in FloorWatch (`site_key`, PROTOCOL.md
+   §8.1): packets are signed, history is given only to signed requests, and
+   FloorWatch can refuse unsigned machines. It proves "knows the key", not
+   which machine; it is not encryption.
+5. **Host firewalls, both directions.** Dashboard PC: allow inbound UDP 5005
+   only from the machines' addresses; allow outbound UDP 5006 to them.
+   LinuxCNC PCs: allow inbound UDP 5006 only from the dashboard PC; the agent
+   itself only sends to UDP 5005.
+6. **Check each machine:** `lcnc-status-agent --check` shows the interface, its
+   address and broadcast address, where packets go, the history port binding
+   and whether packets are signed.
+
+This follows defense-in-depth practice (e.g. CISA's ICS recommended practices);
+it is not a compliance claim. For untrusted or shared networks, authenticated
+per-device messages with encryption are still to come (MES plan Phase 2).
 
 ## Windows firewall (dashboard PC)
 

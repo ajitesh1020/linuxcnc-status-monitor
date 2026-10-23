@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **`monitor_interface`** (MES plan P0.5, review F07): send status and G-code
+  packets only on one network card. The socket is bound to the card's IPv4
+  address (no root needed), `auto` broadcasts on that card only, and a fixed IP
+  or host name is used only if the kernel routes it through that card
+  (`ip route get`). The card is refused — nothing sent, warning logged — if it
+  is missing, down, without IPv4, in `exclude_interfaces`, or has a Mesa board
+  on it; re-checked every 30 s, and the socket is re-bound if its address
+  changes. `--check` shows the card, address and broadcast address. Default
+  `""` = unchanged. `docs/NETWORK.md`: new "Restricted pilot network" section.
+
 - **`loop_lag_ms`** in status packets (MES plan P2.7; PROTOCOL.md §4.10):
   p50 / p99 / max of how late the sampling loop's samples start, over the last
   60 s. Tested: a MES worker stuck inside the spool does not raise it.
