@@ -73,6 +73,7 @@ JOURNAL_FIELDS = (
     "estop", "task_state", "task_mode", "motion_line",
     "file_name", "wcs", "tool_in_spindle", "feedrate",
     "session_id",      # agent start: part counters restart at 0 with a new one
+    "machine_uuid",    # stable machine identity (agent_identity.py)
 )
 # A change in any of these is written immediately.
 CHANGE_FIELDS = (

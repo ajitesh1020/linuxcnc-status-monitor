@@ -120,10 +120,14 @@ except ImportError:
     sys.exit(1)
 
 from agent_auth import MIN_KEY_CHARS, key_bytes
+import agent_identity
 from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
-from agent_packets import PacketGate, fault_signature
+import agent_mes_spool
+import agent_mes_link
+import queue
+from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
                            single_instance)
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
@@ -148,6 +152,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "exclude_interfaces":        "",              # never broadcast on these (comma list)
     "monitor_interface":         "",              # send only on this interface ("" = any)
     "machine_name":              "",              # "" = this PC's hostname
+    "machine_uuid_file":         "",              # "" = ~/linuxcnc-monitor-agent/identity.json
     "poll_interval_s":           1.0,             # seconds between active status packets
     "sample_interval_s":         0.1,             # seconds between stat reads (cycle tracking)
     "idle_heartbeat_interval_s": 30.0,            # keep-alive interval while idle
@@ -164,6 +169,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "journal_allow":             "",              # only these dashboard IPs may fetch history (comma list; "" = any)
     "site_key":                  "",              # shared secret: sign every packet (same text in FloorWatch)            # UDP port the dashboard fetches history from (0 = off)
     "read_error_channel":        False,           # True = also read NML messages (may hide them from the GUI)
+    "mes_enabled":               False,           # MES capture (spool, MillWright outbox); False = nothing MES runs
+    "mes_spool_mb":              1024.0,          # disk budget of the MES spool (~/linuxcnc-monitor-agent/mes_spool.db)
+    "mes_millwright_config":     "",              # LinuxCNC config dir holding MillWright's mw_data/ ("" = no MillWright)
 }
 
 JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
@@ -729,6 +737,12 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
     print(f"lcnc-status-agent {AGENT_VERSION}")
     print(f"  config file   : {cfg_path or '(none — built-in defaults)'}")
     print(f"  machine name  : {machine_name}")
+    id_path = agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR)
+    if os.path.lexists(id_path):
+        id_text = agent_identity.read(id_path) or "DAMAGED — a new one is made at the next start"
+    else:
+        id_text = "not made yet — made at the first start"
+    print(f"  machine uuid  : {id_text}  ({id_path})")
     print(f"  monitor_pc_ip : {cfg['monitor_pc_ip']}")
     plan = sender.interface_plan
     print(f"  interface     : {plan.describe() if plan else 'any (monitor_interface not set)'}")
@@ -801,6 +815,9 @@ def main() -> None:
     sample_interval_s         = min(max(float(cfg["sample_interval_s"]), 0.02),
                                     poll_interval_s)
 
+    # Stable identity (PROTOCOL.md §4.1b): the dashboard keys machines by it.
+    machine_uuid  = agent_identity.load_or_create(
+        agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR))
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     scanner       = ProgramScanner()
     state_machine = _CycleStateMachine(calculator, scanner)
@@ -865,6 +882,8 @@ def main() -> None:
         error_channel = None
         if calculator.snapshot().is_running:
             calculator.abort_cycle()
+        if mes_link:
+            mes_link.end("unknown")          # LinuxCNC went away mid-cycle
         state_machine.reset()
         gcode_sender.reset()
 
@@ -874,6 +893,34 @@ def main() -> None:
     # counting status packets within it, so a delayed or reordered packet can be
     # told apart from a newer one whatever the wall clock does.
     session_id:              str   = uuid.uuid4().hex[:16]
+
+    # MES spool (agent_mes_spool.py): opened here, never touched by the loop
+    # below except for its stats (PROTOCOL.md §4.9).
+    mes_spool = None
+    if cfg["mes_enabled"]:
+        if not machine_uuid:
+            logger.error("mes_enabled is on but there is no machine_uuid: MES stays off.")
+        else:
+            try:
+                mes_spool = agent_mes_spool.Spool(
+                    os.path.join(USER_CONFIG_DIR, "mes_spool.db"), machine_uuid, session_id,
+                    AGENT_VERSION, cfg["mes_spool_mb"])
+                mes_spool.prune()
+                logger.info("MES spool open: %s", mes_spool.stats)
+            except Exception as exc:
+                logger.error("MES spool cannot be opened (%s): MES stays off.", exc)
+                mes_spool = None
+    # MillWright link (agent_mes_link.py): the loop only reads
+    # current_execution.json at cycle start and hands facts over with
+    # put_nowait; the worker thread does all SQLite and file writing.
+    mes_link = mes_worker = None
+    if mes_spool:
+        mw_data = agent_mes_link.mw_data_dir(cfg["mes_millwright_config"])
+        mes_facts: "queue.Queue" = queue.Queue(agent_mes_link.QUEUE_SIZE)
+        mes_link = agent_mes_link.CycleLink(mw_data, mes_facts)
+        mes_worker = agent_mes_link.MesWorker(mes_spool, mw_data, mes_facts)
+        mes_worker.start()
+    mes_counts = (0, 0)              # parts / aborts when the current cycle started
     packet_seq:              int   = 0
     last_sample_time:        float = 0.0
     pending_nml_errors:      list  = []
@@ -883,12 +930,17 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Main loop
     # -----------------------------------------------------------------------
+    loop_lag   = LoopLag()       # how late samples start (PROTOCOL.md §4.10)
+    lag_armed  = False           # the previous sample ran normally (not after a deliberate wait)
     while not _shutdown_requested:
         now = time.monotonic()
 
         if now - last_sample_time < sample_interval_s:
             time.sleep(0.01)
             continue
+        if lag_armed:
+            loop_lag.add(now, (now - last_sample_time - sample_interval_s) * 1000.0)
+        lag_armed = True
         last_sample_time = now
 
         # ------------------------------------------------------------------
@@ -900,16 +952,19 @@ def main() -> None:
                 logger.info("LinuxCNC stopped — waiting for it to start again.")
                 linuxcnc_up = False
                 _disconnect_linuxcnc()
+            lag_armed = False
             time.sleep(1.0)
             continue
         if not linuxcnc_up:
             linuxcnc_up = True
             logger.info("LinuxCNC detected — connecting.")
+            lag_armed = False
             time.sleep(2.0)   # give the task server time to publish its buffers
             continue
 
         if stat_channel is None:
             if not _connect_linuxcnc():
+                lag_armed = False
                 time.sleep(2.0)
                 continue
 
@@ -928,6 +983,7 @@ def main() -> None:
                 stat_channel  = None
                 error_channel = None
                 consecutive_poll_errors = 0
+            lag_armed = False
             time.sleep(1.0)
             continue
 
@@ -943,11 +999,26 @@ def main() -> None:
         # ------------------------------------------------------------------
         # Drive cycle state machine (every sample)
         # ------------------------------------------------------------------
+        previous_cycle_state = state_machine._state
         try:
             current_cycle_state = state_machine.update(stat_channel)
         except Exception as exc:
             logger.error("State machine error: %s", exc)
             current_cycle_state = "UNKNOWN"
+        if mes_link:
+            try:
+                if previous_cycle_state == "IDLE" and current_cycle_state == "RUNNING":
+                    snap = calculator.snapshot()
+                    mes_counts = (snap.parts_produced, snap.abort_count)
+                    mes_link.start(file_path)
+                elif previous_cycle_state in ("RUNNING", "PAUSED") and current_cycle_state == "IDLE":
+                    snap = calculator.snapshot()
+                    mes_link.end("completed" if snap.parts_produced > mes_counts[0] else
+                                 "aborted" if snap.abort_count > mes_counts[1] else "unknown")
+                else:
+                    mes_link.poll()
+            except Exception as exc:
+                logger.error("MES cycle link: %s", exc)
 
         # ------------------------------------------------------------------
         # Everything below runs at the packet cadence, or at once when the
@@ -1074,6 +1145,14 @@ def main() -> None:
         # ------------------------------------------------------------------
         # Journal it, and tell the dashboard how far the journal goes
         # ------------------------------------------------------------------
+        if machine_uuid:    # absent only if identity.json cannot be written
+            payload["machine_uuid"] = machine_uuid
+        lag = loop_lag.stats()
+        if lag is not None:
+            payload["loop_lag_ms"] = lag
+        payload["mes_spool"] = dict(mes_spool.stats) if mes_spool else agent_mes_spool.status_off()
+        if mes_spool:
+            payload["features"] = ["mes1"]
         journal.record(payload, now)
         # "ok", "failing" (cannot write; retried) or "disk_low" (paused):
         # anything but "ok" means history is not being kept right now.
@@ -1115,6 +1194,10 @@ def main() -> None:
         calculator.abort_cycle()
     journal_srv.stop()
     journal.close()
+    if mes_worker:
+        mes_worker.stop()
+    if mes_spool:
+        mes_spool.close()
     sender.close()
     logger.info("CNC Status Monitor stopped cleanly.")
 

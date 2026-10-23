@@ -26,7 +26,8 @@ channel, so the operator's GUI keeps every error message.
 Pure logic with no LinuxCNC import, so it is unit-tested on any PC.
 """
 
-from typing import Any, Optional, Tuple
+import collections
+from typing import Any, Dict, Optional, Tuple
 
 EXEC_ERROR = 1   # linuxcnc.EXEC_ERROR
 RCS_ERROR = 3    # linuxcnc.RCS_ERROR: stat.state after a command failed
@@ -128,3 +129,31 @@ class PacketGate:
         if state == "IDLE":
             self._idle_sent = True
             self._last_heartbeat = now
+
+
+class LoopLag:
+    """How late the sampling loop's samples start (PROTOCOL.md §4.10).
+
+    Each sample is due `sample_interval_s` after the previous one; its lag is
+    how much later it actually started (ms). Kept for the last 60 s; samples
+    after a deliberate wait (LinuxCNC not running, reconnecting) are not
+    counted. stats() -> {"p50", "p99", "max"} (whole ms) or None."""
+
+    def __init__(self, window_s: float = 60.0) -> None:
+        self.window_s = window_s
+        self._lags: "collections.deque" = collections.deque()   # (t, lag_ms)
+
+    def add(self, now: float, lag_ms: float) -> None:
+        self._lags.append((now, max(0.0, lag_ms)))
+        cutoff = now - self.window_s
+        while self._lags and self._lags[0][0] < cutoff:
+            self._lags.popleft()
+
+    def stats(self) -> Optional[Dict[str, int]]:
+        if not self._lags:
+            return None
+        v = sorted(l for _, l in self._lags)
+
+        def pct(p: float) -> int:
+            return int(round(v[min(len(v) - 1, int(p * len(v)))]))   # nearest rank
+        return {"p50": pct(0.50), "p99": pct(0.99), "max": int(round(v[-1]))}

@@ -42,6 +42,12 @@ monitor_interface: ""
 # Example: "VMC-01" or "Router-Bay-3". Must be unique per machine.
 machine_name: ""
 
+# This machine's permanent id (machine_uuid), made on the first start and never
+# changed. The dashboard tells machines apart by it, not by name. Empty = the
+# default file ~/linuxcnc-monitor-agent/identity.json. Keep the file in backups;
+# do not copy it to another machine (two PCs would then look like one).
+machine_uuid_file: ""
+
 # Seconds between status packets while the machine is active. 1.0 is typical.
 poll_interval_s: 1.0
 
@@ -79,6 +85,12 @@ journal_allow: ""           # answer only these dashboard IPs, comma list ("" = 
 # private (chmod 600). Roll out: set it in FloorWatch first, then on each
 # machine, then tick "Refuse unsigned machines" in FloorWatch.
 site_key: ""
+
+# MES capture (scans, cycles, MillWright's outbox) into a durable spool,
+# ~/linuxcnc-monitor-agent/mes_spool.db. Off by default: nothing MES runs.
+mes_enabled: false
+mes_spool_mb: 1024          # disk budget; when full, new events are refused, never dropped
+mes_millwright_config: ""   # LinuxCNC config folder with MillWright's mw_data/ ("" = no MillWright)
 
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen

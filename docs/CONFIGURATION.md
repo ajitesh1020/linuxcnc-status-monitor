@@ -32,6 +32,7 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `exclude_interfaces` | string | `""` | Interfaces never to broadcast on, comma-separated. The Mesa `hm2_eth` interface is skipped automatically |
 | `monitor_interface` | string | `""` | Send status only on this interface (e.g. `enp2s0`): from its IPv4 address, broadcast only on it, fixed targets only if routed through it. Nothing is sent while it is missing / down / the Mesa card / excluded. `""` = any interface. See [NETWORK.md](NETWORK.md#restricted-pilot-network) |
 | `machine_name` | string | `""` | Name shown in the dashboard; empty = the PC's hostname. Must be unique per machine |
+| `machine_uuid_file` | string | `""` | Where the machine's permanent id is kept; empty = `~/linuxcnc-monitor-agent/identity.json`. Made on the first start, never changed after; keep it in backups. Deleting it makes the dashboard see a new machine (PROTOCOL.md §4.1b) |
 | `poll_interval_s` | float | `1.0` | Seconds between status packets while active |
 | `sample_interval_s` | float | `0.1` | Seconds between LinuxCNC reads for cycle / part tracking |
 | `idle_heartbeat_interval_s` | float | `30.0` | Keep-alive interval while idle |
@@ -46,6 +47,9 @@ installed, otherwise a built-in parser reads the file — keep it flat.
 | `journal_port` | int | `5006` | UDP port the dashboard fetches history from; `0` = off |
 | `journal_bind` | string | `""` | Listen for history requests on this address only (e.g. the machine-network card's IP); `""` = all |
 | `journal_allow` | string | `""` | Answer history requests only from these dashboard IPs (comma list); `""` = any |
+| `mes_enabled` | bool | `false` | MES capture (MES plan Phase 2). `false` = nothing MES runs; status packets say `mes_spool.state: "off"` |
+| `mes_spool_mb` | float | `1024` | Disk budget of the MES spool `~/linuxcnc-monitor-agent/mes_spool.db`. Warning at 90 %; when full, new events are refused (never dropped silently); acknowledged events are kept 7 days, unacknowledged ones until they are sent |
+| `mes_millwright_config` | string | `""` | The LinuxCNC config folder MillWright uses (the one holding `mw_data/`). The agent then reads MillWright's MES outbox (read-only), writes `mw_data/mes_ack.json`, and gives its cycles MillWright's `execution_id`. `""` = no MillWright: cycles get the agent's own `execution_id` and an unknown operator |
 | `site_key` | string | `""` | Shared secret for the plant (16+ characters, the same text in FloorWatch). Every packet is signed and history requests must be signed (PROTOCOL.md §8.1). Keep `config.yaml` private: `chmod 600` |
 | `read_error_channel` | bool | `false` | Also read LinuxCNC's NML error channel and send message text in `nml_errors`. **Leave off**: reading the channel removes each message, so the operator's GUI (AXIS, QtDragon, Gmoccapy…) may never show it. Faults are reported from status flags either way |
 

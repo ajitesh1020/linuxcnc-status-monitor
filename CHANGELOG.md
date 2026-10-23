@@ -17,15 +17,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   on it; re-checked every 30 s, and the socket is re-bound if its address
   changes. `--check` shows the card, address and broadcast address. Default
   `""` = unchanged. `docs/NETWORK.md`: new "Restricted pilot network" section.
+
+- **`loop_lag_ms`** in status packets (MES plan P2.7; PROTOCOL.md §4.10):
+  p50 / p99 / max of how late the sampling loop's samples start, over the last
+  60 s. Tested: a MES worker stuck inside the spool does not raise it.
+- **Agent ↔ MillWright link `agent_mes_link.py`** (MES plan P1.6;
+  `mes_millwright_config`). A worker thread copies MillWright's outbox
+  (`mw_data/millwright.db`, opened read-only) into the spool in one
+  transaction with its cursor, then writes `mw_data/mes_ack.json`
+  (`{"epoch", "seq"}` = the last event stored). A new MillWright epoch is read
+  from the start; a full spool or an event the contract rejects leaves the
+  events in the outbox (logged once), never skipped. Every cycle becomes a
+  `cycle.observed` event: at cycle start the sampling loop reads only
+  `mw_data/current_execution.json` (<= 1 KB; again every 0.5 s in the first
+  3 s if MillWright is slower) and takes MillWright's `execution_id` and
+  operator session when the file names the program LinuxCNC runs
+  (`program_path` or `run_file`) and MillWright's start is 3 s before to 1 s
+  after its own (`correlation_method: "explicit"`); otherwise its own
+  `execution_id` and no operator (`"none"`). The loop hands the cycle over with
+  `put_nowait`; it never waits on the MES side.
+- **MES spool `agent_mes_spool.py`** (MES plan P2.4). `mes_enabled` (default
+  `false`: nothing MES runs) opens `~/linuxcnc-monitor-agent/mes_spool.db`
+  (WAL, `synchronous=FULL`; tables `meta`, `spool`, `cursors` as the plan).
+  Every event is checked with the vendored contract's `validate_event()` and
+  stored as its `encode()` bytes; events from another producer (MillWright's
+  outbox) are stored unchanged, in one transaction with that source's cursor.
+  A new epoch when the database is created again or restored from an older
+  copy (sidecar `mes_spool.producer.json`), so a `producer.seq` is never used
+  twice. Budget `mes_spool_mb` (1024): warning at 90 %, at 100 % new events are
+  refused, never dropped; acked rows kept 7 days, pending rows never pruned.
+  Status packets carry `mes_spool` and `features: ["mes1"]` (PROTOCOL.md §4.9).
+  The .deb ships the contract's checker and schemas.
+- **Stable machine identity `machine_uuid`** (MES plan P0.6). Made once on the
+  first start in `~/linuxcnc-monitor-agent/identity.json` (mode 0600, written
+  atomically; key `machine_uuid_file`) and sent in every status packet and
+  journal entry (PROTOCOL.md §4.1b). FloorWatch keys machines by it, so two PCs
+  with the same name stay two machines; it is also the MES `machine_id`. A
+  damaged file is kept as `identity.json.bad-<UTC time>` and replaced, with a
+  warning. Package install, upgrade, remove and purge never touch it.
+  `--check` shows it. `tools/fleet_sim.py` gives each simulated machine its own,
+  kept in `<dir>/<name>.identity.json`.
 - **MES event contract `fw.mes.event/1`** vendored from FloorWatch
   (`contracts/mes/v1/`, pinned in `contracts/mes/CONTRACT_SOURCE`; MES plan
   P1.1). Nothing uses it yet; `tests/test_mes_contract.py` checks the copy is
   unchanged and that its checker passes every example on this Python. Never
   edit the copy: change FloorWatch's and run `tools/vendor_mes_contract.py`
   there.
+- MES contract copy updated to 1.1: `scan.rejected_local` reason `spool_full`
+  (for the spool, MES plan P2.4).
 
 ### Fixed
 
+- **The .deb was missing `agent_auth.py`** (site key, 1.7.0), so the installed
+  agent would not start. It and `agent_identity.py` are now packaged, and
+  `tests/test_packaging.py` fails if a module the agent imports is left out.
 - **Big G-code programs reach the dashboard** (review F05; MES plan P0.2). A
   program is sent if it has at most 32 MiB of text (33,554,432 characters) and
   splits into at most 80,000 frame-sized packets: the shared contract

@@ -118,9 +118,20 @@ class FakeGcode:
         pass
 
 
+class RealClock:
+    """Real time with FakeClock's interface (for timing tests)."""
+
+    @property
+    def now(self):
+        return real_time.monotonic()
+
+    def __getattr__(self, name):
+        return getattr(real_time, name)
+
+
 class StatusLoopTests(unittest.TestCase):
-    def run_agent(self, faults, stop_at=20.0, nml=(), **cfg_over):
-        clock = FakeClock()
+    def run_agent(self, faults, stop_at=20.0, nml=(), clock=None, **cfg_over):
+        clock = clock or FakeClock()
         sc = Scenario(clock, faults, stop_at, nml)
         saved = sys.modules.get("linuxcnc")
         sys.modules["linuxcnc"] = make_fake_linuxcnc(sc)
@@ -128,6 +139,7 @@ class StatusLoopTests(unittest.TestCase):
             self.addCleanup(signal.signal, sig, signal.getsignal(sig))
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        self.agent_dir = tmp.name
         try:
             sys.modules.pop("status", None)
             status = importlib.import_module("status")
@@ -247,6 +259,132 @@ class StatusLoopTests(unittest.TestCase):
         _, second, _ = self.run_agent([])
         self.assertNotEqual({p["session_id"] for p in second}, sessions)
         self.assertEqual(second[0]["packet_seq"], 1)
+
+    def test_machine_uuid_in_every_packet_and_entry_and_kept_across_restarts(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "identity.json")
+        _, first, journal = self.run_agent([(6.0, 6.5, "exec_state", 1)],
+                                           machine_uuid_file=path)
+        with open(path) as f:
+            uid = json.load(f)["machine_uuid"]
+        self.assertEqual({p["machine_uuid"] for p in first}, {uid})
+        self.assertEqual({e["machine_uuid"] for e in journal}, {uid})
+        if os.name == "posix":
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        _, second, _ = self.run_agent([], machine_uuid_file=path)
+        self.assertEqual({p["machine_uuid"] for p in second}, {uid})
+        self.assertNotEqual(first[0]["session_id"], second[0]["session_id"])
+
+    def test_default_identity_file_is_in_the_agent_folder(self):
+        _, packets, _ = self.run_agent([])
+        self.assertRegex(packets[0]["machine_uuid"],
+                         r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+    def test_mes_off_by_default(self):
+        _, packets, _ = self.run_agent([])
+        self.assertTrue(all(p["mes_spool"] == {"pending": 0, "bytes": 0, "state": "off"} for p in packets))
+        self.assertTrue(all("features" not in p for p in packets))
+
+    def test_mes_spool_state_and_features_when_enabled(self):
+        _, packets, _ = self.run_agent([], mes_enabled=True)
+        for p in packets:
+            self.assertEqual(p["features"], ["mes1"])
+            self.assertEqual((p["mes_spool"]["state"], p["mes_spool"]["pending"]), ("ok", 0))
+            self.assertGreater(p["mes_spool"]["bytes"], 0)
+
+    def _program(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        prog = os.path.join(tmp.name, "part.ngc")
+        with open(prog, "w") as f:
+            f.write("%\nG21 G90\n" + "".join(f"G1 X{i} F100\n" for i in range(20)) + "M30\n%\n")
+        run = [(2.0, 8.0, "task_mode", 2), (2.0, 8.0, "interp_state", 2), (0.0, 99.0, "file", prog)]
+        run += [(2.0 + i * 0.5, 2.5 + i * 0.5, "motion_line", 3 + i) for i in range(11)]
+        run.append((7.5, 99.0, "motion_line", 22))
+        return tmp.name, prog, run
+
+    def _cycles(self):
+        import sqlite3 as sq
+        with sq.connect(os.path.join(self.agent_dir, "mes_spool.db")) as db:
+            return [json.loads(b) for (b,) in db.execute(
+                "SELECT body FROM spool WHERE type='cycle.observed' ORDER BY seq")]
+
+    def test_cycle_observed_with_millwrights_execution_id(self):
+        import uuid as u
+        cfg_dir, prog, run = self._program()
+        os.makedirs(os.path.join(cfg_dir, "mw_data"))
+        eid, sid = str(u.uuid4()), str(u.uuid4())
+        with open(os.path.join(cfg_dir, "mw_data", "current_execution.json"), "w") as f:
+            json.dump({"execution_id": eid, "started_at": real_time.strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z", real_time.gmtime()), "program_path": prog, "run_file": prog,
+                "mode": "normal", "station_id": str(u.uuid4()), "operator_session_id": sid}, f)
+        _, packets, _ = self.run_agent(run, stop_at=12.0, mes_enabled=True, mes_millwright_config=cfg_dir)
+        self.assertEqual(packets[-1]["parts_produced"], 1)
+        (c,) = self._cycles()
+        self.assertEqual(c["correlation"]["execution_id"], eid)
+        self.assertEqual(c["correlation"]["operator_session_id"], sid)
+        self.assertEqual((c["payload"]["outcome"], c["payload"]["correlation_method"],
+                          c["payload"]["program_path"]), ("completed", "explicit", prog))
+
+    def test_cycle_observed_without_millwright(self):
+        _cfg, prog, run = self._program()
+        self.run_agent(run, stop_at=12.0, mes_enabled=True)
+        (c,) = self._cycles()
+        self.assertEqual((c["payload"]["correlation_method"], c["correlation"]["operator_session_id"]),
+                         ("none", None))
+        self.assertRegex(c["correlation"]["execution_id"], r"^[0-9a-f-]{36}$")
+
+    def test_packets_report_loop_lag(self):
+        _, packets, _ = self.run_agent([], stop_at=40.0)
+        lag = packets[-1]["loop_lag_ms"]
+        self.assertEqual(sorted(lag), ["max", "p50", "p99"])
+        self.assertTrue(all(isinstance(v, int) and 0 <= v <= 20 for v in lag.values()), lag)
+
+    def test_a_stalled_spool_does_not_slow_the_loop(self):
+        # Real time: cycles run while the MES worker is stuck inside the spool
+        # (a hung disk). The sampling loop must keep its timing.
+        import threading
+        import agent_mes_link
+        import agent_mes_spool
+        stuck = threading.Event()
+        entered = threading.Event()
+        real_add, real_stop = agent_mes_spool.Spool.add, agent_mes_link.MesWorker.stop
+
+        def hung_add(spool, *a, **k):
+            entered.set()
+            stuck.wait(30)
+            return real_add(spool, *a, **k)
+
+        def stop(worker, timeout=5.0):
+            stuck.set()
+            return real_stop(worker, timeout)
+        agent_mes_spool.Spool.add = hung_add
+        agent_mes_link.MesWorker.stop = stop
+        self.addCleanup(setattr, agent_mes_spool.Spool, "add", real_add)
+        self.addCleanup(setattr, agent_mes_link.MesWorker, "stop", real_stop)
+        self.addCleanup(stuck.set)
+        cycles = []
+        for k in range(3):                                  # three short cycles
+            t0 = 0.5 + k * 1.2
+            cycles += [(t0, t0 + 0.6, "task_mode", 2), (t0, t0 + 0.6, "interp_state", 2)]
+        _, packets, _ = self.run_agent(cycles, stop_at=4.5, clock=RealClock(),
+                                       mes_enabled=True)
+        self.assertTrue(entered.is_set(), "the worker never reached the spool")
+        lag = packets[-1]["loop_lag_ms"]
+        self.assertLess(lag["p99"], 60, lag)
+        self.assertLess(lag["max"], 150, lag)
+
+    def test_no_machine_uuid_field_if_identity_cannot_be_written(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        blocker = os.path.join(tmp.name, "a-file")
+        open(blocker, "w").close()
+        _, packets, journal = self.run_agent(
+            [], machine_uuid_file=os.path.join(blocker, "identity.json"))
+        self.assertTrue(packets)
+        self.assertTrue(all("machine_uuid" not in p for p in packets))
+        self.assertTrue(all("machine_uuid" not in e for e in journal))
 
     def test_quiet_idle_machine_sends_only_heartbeats(self):
         sc, packets, _ = self.run_agent([], stop_at=65.0)

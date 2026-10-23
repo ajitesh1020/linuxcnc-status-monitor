@@ -69,6 +69,8 @@ class FleetSimTests(unittest.TestCase):
                 for k in ("session_id", "packet_seq", "cmd_state", "cmd_serial",
                           "agent_id", "journal_seq", "journal_port"):
                     self.assertIn(k, p)
+            self.assertEqual({p["machine_uuid"] for p in mine},
+                             {truth["machines"][name]["machine_uuid"]})
             by_session = {}
             for p in mine:
                 by_session.setdefault(p["session_id"], []).append(p["packet_seq"])
