@@ -227,8 +227,10 @@ GUI shows them (see §7). Do not rely on `nml_errors` for error detection; use
 |---|---|---|
 | `mes_spool` | object | The agent's MES spool: `{"pending": n, "bytes": n, "state": "ok" \| "full" \| "off"}`. `pending` = events stored and not yet acknowledged by the site service; `bytes` = disk used by the spool files; `full` = the disk budget (`mes_spool_mb`) is used up and new events are refused (never dropped silently); `off` = MES is not enabled (`mes_enabled: false`, the default) or the spool could not be opened |
 | `features` | array of strings | What this agent can do beyond monitoring. `"mes1"` = MES contract `fw.mes.event/1` capture is on. Absent when there is nothing to advertise |
+| `mes_link` | object | The link to the MES site service (forwarder, `agent_mes_forward.py`): `{"state": s, "last_ok_ms": n}`. `state`: `"ok"` = the service answered the last request; `"offline"` = not reachable or busy (503), events wait in the spool and are resent with backoff; `"not_enrolled"` = no enrolment or `mes_service_url` not set; `"cert_expired"` = the agent's certificate expired (enrol again); `"rejected"` = the service refused the certificate (revoked or unknown). `last_ok_ms` = wall time (ms) of the last 200 from the service, absent if never. The whole field is absent when MES is off |
 
-Both are additive; a dashboard shows "MES-capable agent" for `"mes1"`.
+All three are additive; a dashboard shows "MES-capable agent" for `"mes1"` and the
+`mes_link` state next to it.
 
 ### 4.10 Sampling-loop timing (agent ≥ 1.7.0)
 
@@ -471,5 +473,6 @@ to the forger.
 | 1 | 2026-10 | Additive (agent 1.7.0): `content_sha256` in `gcode_file`; new `gcode_file_refused` packet (§5.1); limits from `contracts/gcode/v1.json` (32 MiB, 80 000 chunks; was 4 096 chunks in FloorWatch). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `loop_lag_ms` in status packets (§4.10). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `mes_spool` and `features` in status packets (§4.9). No version bump. |
+| 1 | 2026-10 | Additive (agent 1.7.0): `mes_link` in status packets (§4.9). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `machine_uuid` in status packets and journal entries (§4.1b); receivers key machines by it when present. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |
