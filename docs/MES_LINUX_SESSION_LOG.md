@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 22–23 Oct 2026.
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 23 Oct 2026.
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 Nothing here is merged by this session. The user merges.
@@ -10,19 +10,19 @@ Nothing here is merged by this session. The user merges.
 
 | # | Package | Branch → base | PR | State |
 |---|---|---|---|---|
-| A | Stable machine identity (`machine_uuid`) | `feat/machine-identity` → `main` | agent #19 | Open, ready |
-| B | `monitor_interface` | `feat/monitor-interface` → `main` | agent #20 | Open, ready |
-| C | Fleet test exit gate (A–L + H3 on `main`) | — | — | Running (see below) |
-| D | MillWright outbox | `feat/mes-outbox` → `main` | millwright #1 | Open; 467 tests pass; AXIS check pending |
-| E | MillWright run context | `feat/mes-run-context` → `feat/mes-outbox` | millwright #2 | Open; 488 tests pass; AXIS check pending |
-| F | Agent MES spool | `feat/mes-spool` → `feat/machine-identity` | agent #22 | Open, ready |
-| G | Agent ↔ MillWright link | `feat/mes-millwright-link` → `feat/mes-spool` | agent #23 | Open; 164 tests pass; AXIS check pending |
-| H | `loop_lag_ms` | `feat/loop-lag` → `feat/mes-millwright-link` | agent #24 | Open; 170 tests pass; impact runs pending |
+| A | Stable machine identity (`machine_uuid`) | `feat/machine-identity` → `main` | agent #19 | **Merged** 22 Oct |
+| B | `monitor_interface` | `feat/monitor-interface` → `main` | agent #20 | **Merged** 22 Oct |
+| C | Fleet test exit gate (A–K + H3, L from A, on `main`) | — | — | Re-running on current `main` (see below) |
+| D | MillWright outbox | `feat/mes-outbox` → `main` | millwright #1 | Open; contract 1.1 re-vendored locally (7fb82ff, not pushed); 467 tests pass; AXIS check pending |
+| E | MillWright run context | `feat/mes-run-context` → `feat/mes-outbox` | millwright #2 | Open; #1's branch merged in locally (df4bb15, not pushed); 488 tests pass; AXIS check pending |
+| F | Agent MES spool | `feat/mes-spool` | agent #22 | **Merged** 22 Oct |
+| G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check pending |
+| H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs pending |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
-| J | Forwarder to the site service | — | — | Not started; agent PR #25 (docs) unblocks it once merged |
+| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | — | Done locally (7e16fbd + dd9cd5f), **not pushed**; 212 tests pass |
 
-Merge order (stacked PRs): agent #19 → #22 → #23 → #24; #20 on its own (CHANGELOG
-"Added" lines clash with #19: trivial rebase). MillWright #1 → #2.
+Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
+(contract 1.1) merged 23 Oct.
 
 ## What was implemented
 
@@ -44,8 +44,8 @@ The event is written in the same transaction as its audit row; login and logout 
 now atomic. `operator.session_started` / `operator.session_ended`;
 `audit_session.operator_session_id`. State keys `station_id`, `outbox_epoch`,
 `outbox_producer_id`; outbox pruned at session open (never above `mes_ack.json`).
-Flag `[MW_MES] OUTBOX = 1`. Contract vendored from FloorWatch a8b9d42; installed
-with the panels and in the .deb.
+Flag `[MW_MES] OUTBOX = 1`. Contract vendored from FloorWatch a8b9d42, re-vendored
+23 Oct from c7c413b (contract 1.1, `spool_full`); installed with the panels and in the .deb.
 
 **E — run context (millwright #2).** Run frozen at start: `execution_id`, program
 hashes (worker thread for files > 1 MB, cached), `current_execution.json`,
@@ -70,46 +70,86 @@ operator null). Config `mes_millwright_config`. §4.3 updated (`run_file`, windo
 over 60 s (PROTOCOL §4.10). Test: a MES worker stuck in the spool does not change
 loop timing.
 
-## C — fleet exit gate (in progress)
+**J — enrolment + forwarder (branch `feat/mes-forwarder`, not pushed).** New
+`agent_mes_forward.py`.
+- `lcnc-status-agent --mes-enroll https://<service>:8443 <code>`: fetches the CA
+  unverified and **stops before sending the code** unless its SHA-256 starts with
+  the code's last 16 hex digits; key + CSR with `openssl` (EC P-256; `openssl`
+  added to the .deb `Depends`); POST over TLS trusting only that CA; files in
+  `~/linuxcnc-monitor-agent/mes/` (0700, files 0600). A failed attempt leaves an
+  earlier enrolment untouched. Writes `mes_service_url` into `config.yaml` only
+  when the user answers "y" at the prompt.
+- Forwarder thread: capabilities at start and hourly; listed types only (others
+  stay pending); oldest first within `max_batch_events` / `max_batch_bytes` /
+  `max_event_bytes` (gzip over 1 KiB); ack per receipt (all four statuses
+  final; a receipt for another `event_id` is not acked); 503 / timeout / broken
+  connection → nothing marked, backoff 1 s → 5 min with jitter; 413 halves the
+  batch; 401/403 → `rejected`, TLS "expired" alert or `not_after` passed →
+  `cert_expired`; both stop until the certificate file changes (re-enrolment).
+  Sets the spool's `site_id` from the enrolment (only if it is a UUID).
+- `mes_link` in status packets (PROTOCOL §4.9) when MES is on; `--check` shows
+  service, site, certificate expiry. Key `mes_service_url` (config example,
+  CONFIGURATION.md). CHANGELOG.
+- Tests `tests/test_mes_forward.py` (31): fake service + **real
+  `floorwatch_service`** on 127.0.0.1 (enrol, wrong fingerprint leaves the code
+  unused, forward + duplicate on resend, real `kill -9` between the service's
+  commit and the spool update, revoke → rejected → re-enrol resumes). The real-
+  service tests skip unless `FLOORWATCH_DIR` points at a FloorWatch with
+  `src/floorwatch_service` (`~/floorwatch` is on `feat/f08-oee-estimate`, which
+  has no service) and a Python with `cryptography` ≥ 42 is found (`~/fw-venv` has 50).
+- CLI smoke test against a temporary service (HOME in a temp folder; the real
+  agent config was not touched): enrolled, reuse of the code refused
+  (`code_used`), `--check` shows the line.
+- Separate commit: `tests/test_mes_link.py` fake MillWright now closes its SQLite
+  connections; `test_never_writes_millwright_db` failed on clean `main` too (the
+  GC closed the connection mid-test and SQLite checkpointed the WAL).
 
-Both repos at `main` (agent 84e2402, FloorWatch 52addfc, which includes #33–#38).
-99 simulated agents + FloorWatch, each scenario in its own private network
-namespace (`unshare -rn`, no sudo, host networking untouched), three at a time.
-30 min busy + 180 s settle (A: 60 min). Results go into `docs/FLEET_TEST.md`.
+## C — fleet exit gate
+
+First attempt (22 Oct, agent 84e2402, FloorWatch 52addfc): A, B, C all 99 of 99
+exact; D, E, F were killed mid-settle at 23:50 when the session ended (not valid).
+
+Re-run (23 Oct, started 15:33) on current `main` of both repos: agent 8e02631,
+FloorWatch c7c413b. Runner in `~/fw-test/gate2/` (`run_all.sh`, `scen.sh`;
+started with `setsid nohup` so it survives the session): 13 scenarios, three at a
+time, each in its own `unshare -rn` namespace (no sudo). 30 min busy + 180 s
+settle (A: 60 min). H3 = FloorWatch restarted every ~40 s (`--hours 0.011`) for
+the first 10 min. K sends the 5 MB and 32 MB programs (both should be accepted).
+Results per scenario in `~/fw-test/gate2/<name>.log`; they go into
+`docs/FLEET_TEST.md` when all are done.
 
 | Scenario | Result |
 |---|---|
-| A (also L) | 99 of 99 exact — parts 6979/6979, aborts 539/539, E-stops 199/199, cmd fail 87/87, joint 33/33; 0 gaps, 0 warnings |
-| B loss 10 % | 99 of 99 exact — parts 3489/3489; 0 gaps, 0 warnings |
-| C loss 30 % | 99 of 99 exact — parts 3505/3505; 0 gaps, 0 warnings |
-| D, E, F, G, H1, H2, H3, I, J, K | running |
-
-K now sends 5 MB and 32 MB programs: with F05 merged both should be accepted.
+| A–K, H3 | running |
 
 ## Contract gaps found
 
 - ATC pick/drop check mode has no contract `mode` value: those runs get no
   execution events (millwright #2).
-- The spool had no `spool_full` reason: contract 1.1 adds it (FloorWatch #39,
-  agent #21). Re-vendor into MillWright after #39 merges.
+- (Closed) `spool_full` reason: contract 1.1 (FloorWatch #39, agent #21, MillWright
+  re-vendor 7fb82ff).
 
 ## Pending — needs the user
 
-1. **Merge** the open PRs in the order above.
-2. **AXIS check of D + E + G together.** Say how MillWright is installed into
+1. **Push OK** for: agent `feat/mes-forwarder` (J, new PR); MillWright
+   `feat/mes-outbox` (re-vendor) and `feat/mes-run-context` (merge of #1); this
+   log branch.
+2. **Merge** millwright #1 → #2, then the J PR.
+3. **AXIS check of D + E + G together.** Say how MillWright is installed into
    `test_config`; then set `[MW_MES] OUTBOX = 1` and the agent's `mes_enabled` /
    `mes_millwright_config`, start AXIS and run a program. This session only reads the
    files and databases MillWright writes.
-3. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
+4. **J on the real agent** (needs your OK: config change + agent restart): run the
+   site service on 127.0.0.1 (§6), `lcnc-status-agent --mes-enroll …`,
+   `mes_enabled: true`, restart the agent, check `raw_events` in the ledger.
+5. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
    real program, `servo-thread.tmax` with the agent stopped vs running (user resets
    tmax with halcmd).
-4. **Package I:** say when the scanners are bought (plan §16 D1).
-5. **Package J:** starts after agent PR #25 merges (it depends only on F).
-6. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
+6. **Package I:** say when the scanners are bought (plan §16 D1).
+7. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
    choice; the CHANGELOG says 1.7.0.
 
 ## Pending — this session
 
 - Finish C, record it in `docs/FLEET_TEST.md`, open its PR (ask before pushing).
-- Re-vendor contract 1.1 into MillWright once FloorWatch #39 merges.
-- Remove the scratchpad worktrees when their branches are pushed.
+- Remove `~/fw-test/gate2/agent-src` and `fw-src` worktrees after C.
