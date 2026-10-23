@@ -127,7 +127,7 @@ from agent_net import UdpSender
 import agent_mes_spool
 import agent_mes_link
 import queue
-from agent_packets import PacketGate, fault_signature
+from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
                            single_instance)
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
@@ -926,12 +926,17 @@ def main() -> None:
     # -----------------------------------------------------------------------
     # Main loop
     # -----------------------------------------------------------------------
+    loop_lag   = LoopLag()       # how late samples start (PROTOCOL.md §4.10)
+    lag_armed  = False           # the previous sample ran normally (not after a deliberate wait)
     while not _shutdown_requested:
         now = time.monotonic()
 
         if now - last_sample_time < sample_interval_s:
             time.sleep(0.01)
             continue
+        if lag_armed:
+            loop_lag.add(now, (now - last_sample_time - sample_interval_s) * 1000.0)
+        lag_armed = True
         last_sample_time = now
 
         # ------------------------------------------------------------------
@@ -943,16 +948,19 @@ def main() -> None:
                 logger.info("LinuxCNC stopped — waiting for it to start again.")
                 linuxcnc_up = False
                 _disconnect_linuxcnc()
+            lag_armed = False
             time.sleep(1.0)
             continue
         if not linuxcnc_up:
             linuxcnc_up = True
             logger.info("LinuxCNC detected — connecting.")
+            lag_armed = False
             time.sleep(2.0)   # give the task server time to publish its buffers
             continue
 
         if stat_channel is None:
             if not _connect_linuxcnc():
+                lag_armed = False
                 time.sleep(2.0)
                 continue
 
@@ -971,6 +979,7 @@ def main() -> None:
                 stat_channel  = None
                 error_channel = None
                 consecutive_poll_errors = 0
+            lag_armed = False
             time.sleep(1.0)
             continue
 
@@ -1134,6 +1143,9 @@ def main() -> None:
         # ------------------------------------------------------------------
         if machine_uuid:    # absent only if identity.json cannot be written
             payload["machine_uuid"] = machine_uuid
+        lag = loop_lag.stats()
+        if lag is not None:
+            payload["loop_lag_ms"] = lag
         payload["mes_spool"] = dict(mes_spool.stats) if mes_spool else agent_mes_spool.status_off()
         if mes_spool:
             payload["features"] = ["mes1"]

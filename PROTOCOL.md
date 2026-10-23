@@ -230,6 +230,12 @@ GUI shows them (see §7). Do not rely on `nml_errors` for error detection; use
 
 Both are additive; a dashboard shows "MES-capable agent" for `"mes1"`.
 
+### 4.10 Sampling-loop timing (agent ≥ 1.7.0)
+
+| Field | Type | Description |
+|---|---|---|
+| `loop_lag_ms` | object | `{"p50": n, "p99": n, "max": n}` — how late the agent's samples of LinuxCNC started, in whole ms, over the last 60 s. Each sample is due `sample_interval_s` after the previous one. Samples after a deliberate wait (LinuxCNC not running, reconnecting) are not counted. Absent until there is a sample. A few ms is normal (the loop sleeps in 10 ms steps); a rising `p99` means the PC is overloaded |
+
 ## 5. G-code file packet (`type: "gcode_file"`)
 
 Sent when a program is loaded, whenever the loaded file changes, and again every
@@ -463,6 +469,7 @@ to the forger.
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `content_sha256` in `gcode_file`; new `gcode_file_refused` packet (§5.1); limits from `contracts/gcode/v1.json` (32 MiB, 80 000 chunks; was 4 096 chunks in FloorWatch). No version bump. |
+| 1 | 2026-10 | Additive (agent 1.7.0): `loop_lag_ms` in status packets (§4.10). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `mes_spool` and `features` in status packets (§4.9). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `machine_uuid` in status packets and journal entries (§4.1b); receivers key machines by it when present. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

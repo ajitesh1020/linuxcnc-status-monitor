@@ -118,9 +118,20 @@ class FakeGcode:
         pass
 
 
+class RealClock:
+    """Real time with FakeClock's interface (for timing tests)."""
+
+    @property
+    def now(self):
+        return real_time.monotonic()
+
+    def __getattr__(self, name):
+        return getattr(real_time, name)
+
+
 class StatusLoopTests(unittest.TestCase):
-    def run_agent(self, faults, stop_at=20.0, nml=(), **cfg_over):
-        clock = FakeClock()
+    def run_agent(self, faults, stop_at=20.0, nml=(), clock=None, **cfg_over):
+        clock = clock or FakeClock()
         sc = Scenario(clock, faults, stop_at, nml)
         saved = sys.modules.get("linuxcnc")
         sys.modules["linuxcnc"] = make_fake_linuxcnc(sc)
@@ -323,6 +334,46 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual((c["payload"]["correlation_method"], c["correlation"]["operator_session_id"]),
                          ("none", None))
         self.assertRegex(c["correlation"]["execution_id"], r"^[0-9a-f-]{36}$")
+
+    def test_packets_report_loop_lag(self):
+        _, packets, _ = self.run_agent([], stop_at=40.0)
+        lag = packets[-1]["loop_lag_ms"]
+        self.assertEqual(sorted(lag), ["max", "p50", "p99"])
+        self.assertTrue(all(isinstance(v, int) and 0 <= v <= 20 for v in lag.values()), lag)
+
+    def test_a_stalled_spool_does_not_slow_the_loop(self):
+        # Real time: cycles run while the MES worker is stuck inside the spool
+        # (a hung disk). The sampling loop must keep its timing.
+        import threading
+        import agent_mes_link
+        import agent_mes_spool
+        stuck = threading.Event()
+        entered = threading.Event()
+        real_add, real_stop = agent_mes_spool.Spool.add, agent_mes_link.MesWorker.stop
+
+        def hung_add(spool, *a, **k):
+            entered.set()
+            stuck.wait(30)
+            return real_add(spool, *a, **k)
+
+        def stop(worker, timeout=5.0):
+            stuck.set()
+            return real_stop(worker, timeout)
+        agent_mes_spool.Spool.add = hung_add
+        agent_mes_link.MesWorker.stop = stop
+        self.addCleanup(setattr, agent_mes_spool.Spool, "add", real_add)
+        self.addCleanup(setattr, agent_mes_link.MesWorker, "stop", real_stop)
+        self.addCleanup(stuck.set)
+        cycles = []
+        for k in range(3):                                  # three short cycles
+            t0 = 0.5 + k * 1.2
+            cycles += [(t0, t0 + 0.6, "task_mode", 2), (t0, t0 + 0.6, "interp_state", 2)]
+        _, packets, _ = self.run_agent(cycles, stop_at=4.5, clock=RealClock(),
+                                       mes_enabled=True)
+        self.assertTrue(entered.is_set(), "the worker never reached the spool")
+        lag = packets[-1]["loop_lag_ms"]
+        self.assertLess(lag["p99"], 60, lag)
+        self.assertLess(lag["max"], 150, lag)
 
     def test_no_machine_uuid_field_if_identity_cannot_be_written(self):
         tmp = tempfile.TemporaryDirectory()
