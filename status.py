@@ -120,6 +120,7 @@ except ImportError:
     sys.exit(1)
 
 from agent_auth import MIN_KEY_CHARS, key_bytes
+import agent_identity
 from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
@@ -147,6 +148,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "monitor_pc_port":           5005,            # UDP port on the monitoring PC
     "exclude_interfaces":        "",              # never broadcast on these (comma list)
     "machine_name":              "",              # "" = this PC's hostname
+    "machine_uuid_file":         "",              # "" = ~/linuxcnc-monitor-agent/identity.json
     "poll_interval_s":           1.0,             # seconds between active status packets
     "sample_interval_s":         0.1,             # seconds between stat reads (cycle tracking)
     "idle_heartbeat_interval_s": 30.0,            # keep-alive interval while idle
@@ -728,6 +730,12 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
     print(f"lcnc-status-agent {AGENT_VERSION}")
     print(f"  config file   : {cfg_path or '(none — built-in defaults)'}")
     print(f"  machine name  : {machine_name}")
+    id_path = agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR)
+    if os.path.lexists(id_path):
+        id_text = agent_identity.read(id_path) or "DAMAGED — a new one is made at the next start"
+    else:
+        id_text = "not made yet — made at the first start"
+    print(f"  machine uuid  : {id_text}  ({id_path})")
     print(f"  monitor_pc_ip : {cfg['monitor_pc_ip']}")
     print(f"  sending to    : {', '.join(sender.targets) or '(nothing!)'} "
           f"port {cfg['monitor_pc_port']}")
@@ -798,6 +806,9 @@ def main() -> None:
     sample_interval_s         = min(max(float(cfg["sample_interval_s"]), 0.02),
                                     poll_interval_s)
 
+    # Stable identity (PROTOCOL.md §4.1b): the dashboard keys machines by it.
+    machine_uuid  = agent_identity.load_or_create(
+        agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR))
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     scanner       = ProgramScanner()
     state_machine = _CycleStateMachine(calculator, scanner)
@@ -1070,6 +1081,8 @@ def main() -> None:
         # ------------------------------------------------------------------
         # Journal it, and tell the dashboard how far the journal goes
         # ------------------------------------------------------------------
+        if machine_uuid:    # absent only if identity.json cannot be written
+            payload["machine_uuid"] = machine_uuid
         journal.record(payload, now)
         # "ok", "failing" (cannot write; retried) or "disk_low" (paused):
         # anything but "ok" means history is not being kept right now.

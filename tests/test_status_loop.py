@@ -248,6 +248,38 @@ class StatusLoopTests(unittest.TestCase):
         self.assertNotEqual({p["session_id"] for p in second}, sessions)
         self.assertEqual(second[0]["packet_seq"], 1)
 
+    def test_machine_uuid_in_every_packet_and_entry_and_kept_across_restarts(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "identity.json")
+        _, first, journal = self.run_agent([(6.0, 6.5, "exec_state", 1)],
+                                           machine_uuid_file=path)
+        with open(path) as f:
+            uid = json.load(f)["machine_uuid"]
+        self.assertEqual({p["machine_uuid"] for p in first}, {uid})
+        self.assertEqual({e["machine_uuid"] for e in journal}, {uid})
+        if os.name == "posix":
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        _, second, _ = self.run_agent([], machine_uuid_file=path)
+        self.assertEqual({p["machine_uuid"] for p in second}, {uid})
+        self.assertNotEqual(first[0]["session_id"], second[0]["session_id"])
+
+    def test_default_identity_file_is_in_the_agent_folder(self):
+        _, packets, _ = self.run_agent([])
+        self.assertRegex(packets[0]["machine_uuid"],
+                         r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+    def test_no_machine_uuid_field_if_identity_cannot_be_written(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        blocker = os.path.join(tmp.name, "a-file")
+        open(blocker, "w").close()
+        _, packets, journal = self.run_agent(
+            [], machine_uuid_file=os.path.join(blocker, "identity.json"))
+        self.assertTrue(packets)
+        self.assertTrue(all("machine_uuid" not in p for p in packets))
+        self.assertTrue(all("machine_uuid" not in e for e in journal))
+
     def test_quiet_idle_machine_sends_only_heartbeats(self):
         sc, packets, _ = self.run_agent([], stop_at=65.0)
         self.assertEqual(len(packets), 3)                  # start, 30 s, 60 s

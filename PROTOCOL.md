@@ -106,6 +106,7 @@ per `idle_heartbeat_interval_s` (default 30 s) while idle (see §6).
 |---|---|---|
 | `session_id` | string | Random id made each time the agent starts. The part / abort counters start again at 0 with a new one |
 | `packet_seq` | integer | Counts status packets within a session, from 1 |
+| `machine_uuid` | string | Agent ≥ 1.7.0. This machine's permanent id: UUID version 4, lowercase with hyphens. Made once on the machine's first start (`~/linuxcnc-monitor-agent/identity.json`) and never changed by restarts, renames or reinstalls. It is also the MES `machine_id`. Absent only if the agent cannot write its identity file |
 
 A receiver orders a machine's packets by (`session_id`, `packet_seq`), not by
 `ts`: UDP may deliver a packet late or out of order, and the machine's clock can
@@ -115,6 +116,13 @@ dropped. A counter that goes down **within** a session is not a restart; a new
 `session_id` is. (Agents without these fields: order by `ts`, treating a packet up
 to ~10 s older than the newest as a delayed copy.) `session_id` is also stored in
 journal entries, so replayed history shows restarts too.
+
+A receiver keys a machine by `machine_uuid` when present, so two PCs with the
+same `machine_name` stay two machines and a renamed PC keeps its history;
+`machine_name` is only the display name. Without `machine_uuid` (older agents),
+key by `machine_name`. `machine_uuid` is stored in journal entries too. A new
+`machine_uuid` for a known name means the PC's identity file was lost or
+damaged (the agent keeps a damaged one as `identity.json.bad-<UTC time>`).
 
 ### 4.2 Machine state
 
@@ -446,4 +454,5 @@ to the forger.
 | 1 | 2026-10 | Agent 1.6.0: `nml_errors` is `[]` unless `read_error_channel` is set; fault edges sent at once; `journal_request` `from_seq` / `to_seq` must be whole numbers 0…2⁶³−1 (else no reply); `journal_port` is `0` while the history server is down. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `session_id` and `packet_seq` in status packets (§4.1b), `session_id` in journal entries; receivers order by them and find journal gaps by `journal_seq` steps (§5a). No version bump. |
 | 1 | 2026-10 | Additive (agent 1.7.0): `content_sha256` in `gcode_file`; new `gcode_file_refused` packet (§5.1); limits from `contracts/gcode/v1.json` (32 MiB, 80 000 chunks; was 4 096 chunks in FloorWatch). No version bump. |
+| 1 | 2026-10 | Additive (agent 1.7.0): `machine_uuid` in status packets and journal entries (§4.1b); receivers key machines by it when present. No version bump. |
 | 1 | 2026-10 | Additive (agent 1.6.0): `cmd_state` and `cmd_serial` in status packets and journal entries; a failed command is a fault edge (sent at once, journalled). Use `cmd_state == 3` for G-code errors, which do not set `exec_state` to 1. No version bump. |

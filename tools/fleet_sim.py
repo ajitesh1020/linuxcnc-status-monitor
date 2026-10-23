@@ -12,7 +12,8 @@ fleet_sim.py — many simulated agents, for testing a dashboard end to end
 A test tool, not part of the installed agent. Each simulated machine uses the
 agent's own modules, so the dashboard sees what real agents send:
 
-  * status packets with session_id / packet_seq / cmd_state / cmd_serial, timed
+  * status packets with machine_uuid (kept in <dir>/<name>.identity.json, so
+    the same across runs) and session_id / packet_seq / cmd_state / cmd_serial, timed
     by agent_packets.PacketGate (1 s while active, 30 s heartbeat while idle,
     fault edges at once);
   * a real history journal (agent_journal.Journal) and history server
@@ -50,6 +51,7 @@ sys.path.insert(0, ROOT)
 
 from agent_auth import key_bytes, sign             # noqa: E402
 from agent_gcode import GcodeFileSender          # noqa: E402
+from agent_identity import load_or_create         # noqa: E402
 from agent_journal import Journal, JournalServer  # noqa: E402
 from agent_packets import PacketGate             # noqa: E402
 
@@ -118,6 +120,8 @@ class SimMachine:
         self.args, self.rng, self.sender, self.program = args, rng, sender, program
         self.journal = Journal(os.path.join(args.dir, f"{self.name}.journal.db"),
                                args.journal_interval, 14.0)
+        # Kept in <dir> like a real agent's identity.json: the same across runs.
+        self.machine_uuid = load_or_create(os.path.join(args.dir, f"{self.name}.identity.json"))
         self.port = args.journal_base_port + index if args.journal_base_port else 0
         self.server = JournalServer(self.journal.path, self.port, self.name,
                                     self.journal.agent_id, bind_host=args.journal_host,
@@ -130,6 +134,7 @@ class SimMachine:
         self.truth: Dict[str, Any] = {"parts": 0, "aborts": 0, "estops": 0,
                                       "cmd_failures": 0, "joint_faults": [0] * JOINTS,
                                       "sessions": 0, "agent_id": self.journal.agent_id,
+                                      "machine_uuid": self.machine_uuid,
                                       "journal_port": self.port}
         self.cmd_serial = rng.randint(1, 50)
         self._new_session(time.monotonic())
@@ -257,7 +262,8 @@ class SimMachine:
         x = round(50.0 * pct / 100.0, 4)
         return {
             "type": "status", "proto": PROTOCOL_VERSION, "ts": int(time.time() * 1000),
-            "machine_name": self.name, "session_id": self.session_id,
+            "machine_name": self.name, "machine_uuid": self.machine_uuid,
+            "session_id": self.session_id,
             "packet_seq": self.packet_seq,
             "cycle_state": self.state,
             "cycle_time_ms": int((now - self.cycle_start) * 1000) if running else 0,

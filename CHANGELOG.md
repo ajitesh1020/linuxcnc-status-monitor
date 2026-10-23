@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Stable machine identity `machine_uuid`** (MES plan P0.6). Made once on the
+  first start in `~/linuxcnc-monitor-agent/identity.json` (mode 0600, written
+  atomically; key `machine_uuid_file`) and sent in every status packet and
+  journal entry (PROTOCOL.md §4.1b). FloorWatch keys machines by it, so two PCs
+  with the same name stay two machines; it is also the MES `machine_id`. A
+  damaged file is kept as `identity.json.bad-<UTC time>` and replaced, with a
+  warning. Package install, upgrade, remove and purge never touch it.
+  `--check` shows it. `tools/fleet_sim.py` gives each simulated machine its own,
+  kept in `<dir>/<name>.identity.json`.
 - **MES event contract `fw.mes.event/1`** vendored from FloorWatch
   (`contracts/mes/v1/`, pinned in `contracts/mes/CONTRACT_SOURCE`; MES plan
   P1.1). Nothing uses it yet; `tests/test_mes_contract.py` checks the copy is
@@ -17,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **The .deb was missing `agent_auth.py`** (site key, 1.7.0), so the installed
+  agent would not start. It and `agent_identity.py` are now packaged, and
+  `tests/test_packaging.py` fails if a module the agent imports is left out.
 - **Big G-code programs reach the dashboard** (review F05; MES plan P0.2). A
   program is sent if it has at most 32 MiB of text (33,554,432 characters) and
   splits into at most 80,000 frame-sized packets: the shared contract
