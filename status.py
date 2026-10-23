@@ -125,6 +125,8 @@ from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
 import agent_mes_spool
+import agent_mes_link
+import queue
 from agent_packets import PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
                            single_instance)
@@ -168,6 +170,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "read_error_channel":        False,           # True = also read NML messages (may hide them from the GUI)
     "mes_enabled":               False,           # MES capture (spool, MillWright outbox); False = nothing MES runs
     "mes_spool_mb":              1024.0,          # disk budget of the MES spool (~/linuxcnc-monitor-agent/mes_spool.db)
+    "mes_millwright_config":     "",              # LinuxCNC config dir holding MillWright's mw_data/ ("" = no MillWright)
 }
 
 JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
@@ -875,6 +878,8 @@ def main() -> None:
         error_channel = None
         if calculator.snapshot().is_running:
             calculator.abort_cycle()
+        if mes_link:
+            mes_link.end("unknown")          # LinuxCNC went away mid-cycle
         state_machine.reset()
         gcode_sender.reset()
 
@@ -901,6 +906,17 @@ def main() -> None:
             except Exception as exc:
                 logger.error("MES spool cannot be opened (%s): MES stays off.", exc)
                 mes_spool = None
+    # MillWright link (agent_mes_link.py): the loop only reads
+    # current_execution.json at cycle start and hands facts over with
+    # put_nowait; the worker thread does all SQLite and file writing.
+    mes_link = mes_worker = None
+    if mes_spool:
+        mw_data = agent_mes_link.mw_data_dir(cfg["mes_millwright_config"])
+        mes_facts: "queue.Queue" = queue.Queue(agent_mes_link.QUEUE_SIZE)
+        mes_link = agent_mes_link.CycleLink(mw_data, mes_facts)
+        mes_worker = agent_mes_link.MesWorker(mes_spool, mw_data, mes_facts)
+        mes_worker.start()
+    mes_counts = (0, 0)              # parts / aborts when the current cycle started
     packet_seq:              int   = 0
     last_sample_time:        float = 0.0
     pending_nml_errors:      list  = []
@@ -970,11 +986,26 @@ def main() -> None:
         # ------------------------------------------------------------------
         # Drive cycle state machine (every sample)
         # ------------------------------------------------------------------
+        previous_cycle_state = state_machine._state
         try:
             current_cycle_state = state_machine.update(stat_channel)
         except Exception as exc:
             logger.error("State machine error: %s", exc)
             current_cycle_state = "UNKNOWN"
+        if mes_link:
+            try:
+                if previous_cycle_state == "IDLE" and current_cycle_state == "RUNNING":
+                    snap = calculator.snapshot()
+                    mes_counts = (snap.parts_produced, snap.abort_count)
+                    mes_link.start(file_path)
+                elif previous_cycle_state in ("RUNNING", "PAUSED") and current_cycle_state == "IDLE":
+                    snap = calculator.snapshot()
+                    mes_link.end("completed" if snap.parts_produced > mes_counts[0] else
+                                 "aborted" if snap.abort_count > mes_counts[1] else "unknown")
+                else:
+                    mes_link.poll()
+            except Exception as exc:
+                logger.error("MES cycle link: %s", exc)
 
         # ------------------------------------------------------------------
         # Everything below runs at the packet cadence, or at once when the
@@ -1147,6 +1178,8 @@ def main() -> None:
         calculator.abort_cycle()
     journal_srv.stop()
     journal.close()
+    if mes_worker:
+        mes_worker.stop()
     if mes_spool:
         mes_spool.close()
     sender.close()

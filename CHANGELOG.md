@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Agent ↔ MillWright link `agent_mes_link.py`** (MES plan P1.6;
+  `mes_millwright_config`). A worker thread copies MillWright's outbox
+  (`mw_data/millwright.db`, opened read-only) into the spool in one
+  transaction with its cursor, then writes `mw_data/mes_ack.json`
+  (`{"epoch", "seq"}` = the last event stored). A new MillWright epoch is read
+  from the start; a full spool or an event the contract rejects leaves the
+  events in the outbox (logged once), never skipped. Every cycle becomes a
+  `cycle.observed` event: at cycle start the sampling loop reads only
+  `mw_data/current_execution.json` (<= 1 KB; again every 0.5 s in the first
+  3 s if MillWright is slower) and takes MillWright's `execution_id` and
+  operator session when the file names the program LinuxCNC runs
+  (`program_path` or `run_file`) and MillWright's start is 3 s before to 1 s
+  after its own (`correlation_method: "explicit"`); otherwise its own
+  `execution_id` and no operator (`"none"`). The loop hands the cycle over with
+  `put_nowait`; it never waits on the MES side.
 - **MES spool `agent_mes_spool.py`** (MES plan P2.4). `mes_enabled` (default
   `false`: nothing MES runs) opens `~/linuxcnc-monitor-agent/mes_spool.db`
   (WAL, `synchronous=FULL`; tables `meta`, `spool`, `cursors` as the plan).
