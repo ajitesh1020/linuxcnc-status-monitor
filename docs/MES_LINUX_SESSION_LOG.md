@@ -19,7 +19,7 @@ Nothing here is merged by this session. The user merges.
 | G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check pending |
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs pending |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
-| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | — | Done locally (7e16fbd + dd9cd5f), **not pushed**; 212 tests pass |
+| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | Open, ready; 212 tests pass |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -70,7 +70,7 @@ operator null). Config `mes_millwright_config`. §4.3 updated (`run_file`, windo
 over 60 s (PROTOCOL §4.10). Test: a MES worker stuck in the spool does not change
 loop timing.
 
-**J — enrolment + forwarder (branch `feat/mes-forwarder`, not pushed).** New
+**J — enrolment + forwarder (agent #26).** New
 `agent_mes_forward.py`.
 - `lcnc-status-agent --mes-enroll https://<service>:8443 <code>`: fetches the CA
   unverified and **stops before sending the code** unless its SHA-256 starts with
@@ -131,10 +131,10 @@ Results per scenario in `~/fw-test/gate2/<name>.log`; they go into
 
 ## Pending — needs the user
 
-1. **Push OK** for: agent `feat/mes-forwarder` (J, new PR); MillWright
+1. **Push OK** for: MillWright
    `feat/mes-outbox` (re-vendor) and `feat/mes-run-context` (merge of #1); this
    log branch.
-2. **Merge** millwright #1 → #2, then the J PR.
+2. **Merge** millwright #1 → #2, and agent #26 (J).
 3. **AXIS check of D + E + G together.** Say how MillWright is installed into
    `test_config`; then set `[MW_MES] OUTBOX = 1` and the agent's `mes_enabled` /
    `mes_millwright_config`, start AXIS and run a program. This session only reads the
