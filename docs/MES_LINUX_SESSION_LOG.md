@@ -1,10 +1,10 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 23 Oct 2026.
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 26 Oct 2026.
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
-Nothing here is merged by this session. The user merges.
+The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
 
 ## Packages
 
@@ -12,14 +12,14 @@ Nothing here is merged by this session. The user merges.
 |---|---|---|---|---|
 | A | Stable machine identity (`machine_uuid`) | `feat/machine-identity` → `main` | agent #19 | **Merged** 22 Oct |
 | B | `monitor_interface` | `feat/monitor-interface` → `main` | agent #20 | **Merged** 22 Oct |
-| C | Fleet test exit gate (A–K + H3, L from A, on `main`) | — | — | Re-running on current `main` (see below) |
-| D | MillWright outbox | `feat/mes-outbox` → `main` | millwright #1 | Open; contract 1.1 re-vendored locally (7fb82ff, not pushed); 467 tests pass; AXIS check pending |
-| E | MillWright run context | `feat/mes-run-context` → `feat/mes-outbox` | millwright #2 | Open; #1's branch merged in locally (df4bb15, not pushed); 488 tests pass; AXIS check pending |
+| C | Fleet test exit gate (A–K + H3, L from A, on `main`) | — | — | Third run started 26 Oct on current `main` (see below) |
+| D | MillWright outbox | `feat/mes-outbox` → `main` | millwright #1 | **Merged** 26 Oct (with contract 1.1 re-vendor 7fb82ff); AXIS check pending |
+| E | MillWright run context | `feat/mes-run-context` → `main` | millwright #2 | **Merged** 26 Oct (base changed to `main` after #1; 488 tests pass on the combined branch); AXIS check pending |
 | F | Agent MES spool | `feat/mes-spool` | agent #22 | **Merged** 22 Oct |
 | G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check pending |
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs pending |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
-| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | Open, ready; 212 tests pass |
+| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -109,14 +109,21 @@ loop timing.
 First attempt (22 Oct, agent 84e2402, FloorWatch 52addfc): A, B, C all 99 of 99
 exact; D, E, F were killed mid-settle at 23:50 when the session ended (not valid).
 
-Re-run (23 Oct, started 15:33) on current `main` of both repos: agent 8e02631,
-FloorWatch c7c413b. Runner in `~/fw-test/gate2/` (`run_all.sh`, `scen.sh`;
+Second attempt (23 Oct, agent 8e02631, FloorWatch c7c413b): B (loss 10%) and C
+(loss 30%) 99 of 99 exact, 0 warnings, 0 errors. A, D, E stopped at 16:08 and the
+other scenarios never started (the PC was rebooted before 26 Oct). Logs kept in
+`~/fw-test/gate2/old-run-2026-10-23/`.
+
+Third run (26 Oct, started 12:27) on current `main` of both repos: agent cb6b545
+(includes J), FloorWatch a3399b6. Smoke run first (F with `SMOKE=1`, check by
+hand): 99 of 99 exact. Runner in `~/fw-test/gate2/` (`run_all.sh`, `scen.sh`;
 started with `setsid nohup` so it survives the session): 13 scenarios, three at a
 time, each in its own `unshare -rn` namespace (no sudo). 30 min busy + 180 s
 settle (A: 60 min). H3 = FloorWatch restarted every ~40 s (`--hours 0.011`) for
 the first 10 min. K sends the 5 MB and 32 MB programs (both should be accepted).
 Results per scenario in `~/fw-test/gate2/<name>.log`; they go into
-`docs/FLEET_TEST.md` when all are done.
+`docs/FLEET_TEST.md` when all are done. Note: F, G, H2, I are scripted on fixed
+times (up to 20 min), so `SMOKE=1` does not shorten them.
 
 | Scenario | Result |
 |---|---|
@@ -131,22 +138,20 @@ Results per scenario in `~/fw-test/gate2/<name>.log`; they go into
 
 ## Pending — needs the user
 
-1. **Push OK** for: MillWright
-   `feat/mes-outbox` (re-vendor) and `feat/mes-run-context` (merge of #1); this
-   log branch.
-2. **Merge** millwright #1 → #2, and agent #26 (J).
-3. **AXIS check of D + E + G together.** Say how MillWright is installed into
-   `test_config`; then set `[MW_MES] OUTBOX = 1` and the agent's `mes_enabled` /
+1. **Push OK** for this log branch.
+2. **AXIS check of D + E + G together.** MillWright is the user's LinuxCNC
+   configuration app; it installs itself into a StepConf-generated config (user,
+   26 Oct). Install it into `test_config` that way, then set `[MW_MES] OUTBOX = 1` and the agent's `mes_enabled` /
    `mes_millwright_config`, start AXIS and run a program. This session only reads the
    files and databases MillWright writes.
-4. **J on the real agent** (needs your OK: config change + agent restart): run the
+3. **J on the real agent** (needs your OK: config change + agent restart): run the
    site service on 127.0.0.1 (§6), `lcnc-status-agent --mes-enroll …`,
    `mes_enabled: true`, restart the agent, check `raw_events` in the ledger.
-5. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
+4. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
    real program, `servo-thread.tmax` with the agent stopped vs running (user resets
    tmax with halcmd).
-6. **Package I:** say when the scanners are bought (plan §16 D1).
-7. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
+5. **Package I:** say when the scanners are bought (plan §16 D1).
+6. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
    choice; the CHANGELOG says 1.7.0.
 
 ## Pending — this session
