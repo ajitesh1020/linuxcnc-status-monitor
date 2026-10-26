@@ -89,6 +89,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **A `G4` dwell before the first move made a run from the top count as Run
+  From Here.** The program scan took `G4` for a move, but LinuxCNC never shows
+  a dwell as `motion_line`; with more than a few lines between the dwell and
+  the first real move (e.g. a `G04 P3` spindle wait then variables) the run was
+  classified mid-program. Found in the AXIS check of 26 Oct 2026.
+- **An unfinished part's time was carried into a different program.** After an
+  abort, a Run From Here of another file continued the old part and added its
+  time. The calculator now knows the loaded file: when another program starts,
+  the unfinished part is recorded as partial and nothing is carried. Reloading
+  the same file still continues it.
+
 - **The .deb was missing `agent_auth.py`** (site key, 1.7.0), so the installed
   agent would not start. It and `agent_identity.py` are now packaged, and
   `tests/test_packaging.py` fails if a module the agent imports is left out.

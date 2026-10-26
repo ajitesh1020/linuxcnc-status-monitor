@@ -34,6 +34,8 @@ Part accounting (one physical part = one pass through the program)
   * Top → stopped midway → started again from top  → the unfinished part is
     recorded as a PARTIAL part with how far it got (e.g. 0.5 = half done),
     and the new run starts a fresh part.
+  * Stopped midway → a DIFFERENT program starts     → the same: the unfinished
+    part is recorded as partial and no time is carried into the other program.
 
 Whether a cycle started from the top or mid-program is only known once the
 first move executes, so start_cycle(None) opens the cycle "unclassified" and
@@ -98,6 +100,7 @@ class _CycleState:
     running: bool                    = False
     paused: bool                     = False
     cycle_complete_signalled: bool   = False   # end-line reached?
+    program: Optional[str]           = None    # loaded file (None = unknown)
     is_run_from_here: bool           = False
     classified: bool                 = False   # start point (top / mid) known?
     progress: float                  = 0.0     # 0..1 furthest point this cycle
@@ -141,6 +144,7 @@ class CycleTimeCalculator:
         # Here) that a later Run From Here may still complete.
         self._part_open:           bool  = False
         self._open_progress:       float = 0.0
+        self._open_program:        Optional[str] = None   # file the open part belongs to
         self._partial_parts:       int   = 0
         self._partial_equiv:       float = 0.0
         self._last_partial_pct:    Optional[float] = None
@@ -152,12 +156,16 @@ class CycleTimeCalculator:
     # Control methods
     # ------------------------------------------------------------------
 
-    def start_cycle(self, run_from_here: Optional[bool] = False) -> None:
+    def start_cycle(self, run_from_here: Optional[bool] = False,
+                    program: Optional[str] = None) -> None:
         """
         Start a new cycle.
         run_from_here=True  — continued mid-program via "Run From Here".
         run_from_here=False — started from the top.
         run_from_here=None  — not known yet; call classify_start() later.
+        program             — the loaded file. When it is not the file of the
+                              open (unfinished) part, that part is recorded as
+                              partial and no time is carried. None = unknown.
         """
         with self._lock:
             if self._state.running:
@@ -168,7 +176,16 @@ class CycleTimeCalculator:
                 start_ns=time.perf_counter_ns(),
                 running=True,
                 paused=False,
+                program=program,
             )
+            if (self._part_open and program is not None
+                    and self._open_program is not None
+                    and program != self._open_program):
+                self._log(logging.WARNING,
+                          "Program changed (%s -> %s) — the unfinished part of "
+                          "the previous program is not continued.",
+                          self._open_program, program)
+                self._finalize_partial_unsafe()
             if run_from_here is None:
                 self._log(logging.INFO, "Cycle STARTED — waiting for the first move "
                                         "to tell top vs Run From Here.")
@@ -381,6 +398,7 @@ class CycleTimeCalculator:
             self._carry_ms            = 0
             self._part_open           = False
             self._open_progress       = 0.0
+            self._open_program        = None
             self._partial_parts       = 0
             self._partial_equiv       = 0.0
             self._last_partial_pct    = None
@@ -423,14 +441,16 @@ class CycleTimeCalculator:
         self._carry_ms      = duration_ms
         self._part_open     = True
         self._open_progress = progress
+        self._open_program  = self._state.program
 
     def _close_part_unsafe(self) -> None:
         self._carry_ms      = 0
         self._part_open     = False
         self._open_progress = 0.0
+        self._open_program  = None
 
     def _finalize_partial_unsafe(self) -> None:
-        """The open part was abandoned — program restarted from the top."""
+        """The open part was abandoned — restarted from the top, or another program."""
         frac = self._open_progress
         self._partial_parts   += 1
         self._partial_equiv   += frac
