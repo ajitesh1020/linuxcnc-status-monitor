@@ -166,5 +166,33 @@ running). Script: `unshare -rn` → `ip link set lo up` → §5 `tc` lines → s
    tile paint (`Fatal Python error: none_dealloc`). Use `-c constraints-release.txt` (§1).
 4. F05 log noise: a refused big program is logged on every resend (30× per machine per 30 min).
 
+### Exit gate on current `main` (26 Oct 2026) — MES plan package C
+
+All 13 scenarios again, on one commit of each repo: agent **cb6b545** (`main`, incl. MES packages A, B, F,
+G, H, J), FloorWatch **a3399b6** (`main`, incl. the restart-baseline fix and phase 0). 99 sim each, 30 min busy +
+180 s settle (A: 60 min), defaults, three scenarios at a time, each in its own `unshare -rn` namespace (runner:
+`~/fw-test/gate2/run_all.sh` + `scen.sh`). Started 12:27, all done 15:23. A smoke run first (F with 2 min):
+99 of 99 exact. The partial run of 23 Oct (B and C exact, the rest stopped by a reboot) is superseded.
+
+| Scenario | Seed | Result of `check` | Notes |
+|---|---|---|---|
+| A | 31 | **99 of 99 exact** — parts 7003/7003, aborts 530/530, E-stops 190/190, cmd fail 78/78, joint 33/33 | 60 min. 70 backfills, 0 `history_gaps`, 0 warnings / errors |
+| B | 32 | **99 of 99 exact** — parts 3513/3513, aborts 264/264, E-stops 104/104, cmd fail 37/37, joint 16/16 | `loss 10%` busy; netem dropped 102982. 468 backfills, 0 gaps, 0 warnings |
+| C | 33 | **99 of 99 exact** — parts 3500/3500, aborts 262/262, E-stops 97/97, cmd fail 38/38, joint 18/18 | `loss 30%` busy; netem dropped 308808. 1290 backfills, 0 gaps, 0 warnings |
+| D | 34 | **99 of 99 exact** — parts 3498/3498, aborts 266/266, E-stops 90/90, cmd fail 51/51, joint 12/12 | `delay 20ms reorder 25% 50%`. 39 backfills, 0 gaps, 0 warnings. Window not watched (offscreen) |
+| E | 35 | **99 of 99 exact** — parts 3510/3510, aborts 237/237, E-stops 85/85, cmd fail 38/38, joint 15/15 | `duplicate 10%`. 50 backfills, 0 gaps, 0 warnings |
+| F | 36 | **99 of 99 exact** — parts 3498/3498, aborts 284/284, E-stops 99/99, cmd fail 47/47, joint 19/19 | `loss 100%` 30 s at 15 min. 127 backfills, 0 gaps, 0 warnings |
+| G | 37 | **99 of 99 exact** — parts 3488/3488, aborts 280/280, E-stops 91/91, cmd fail 45/45, joint 17/17 | `loss 100%` 10 min. 112 backfills, 0 gaps, 0 warnings |
+| H1 | 38 | **99 of 99 exact** — parts 3517/3517, aborts 246/246, E-stops 93/93, cmd fail 54/54, joint 19/19 | FloorWatch ended at +895 s, down 60 s, same `--dir`. 0 gaps, 0 warnings (the 22 Oct 1-short case is fixed on `main`) |
+| H2 | 39 | **99 of 99 exact** — parts 3470/3470, aborts 276/276, E-stops 90/90, cmd fail 36/36, joint 17/17 | `kill -9` at 15 min, down 60 s. 0 gaps, 0 warnings |
+| H3 | 40 | **99 of 99 exact** — parts 3517/3517, aborts 283/283, E-stops 100/100, cmd fail 47/47, joint 17/17 | New: FloorWatch restarted every ~40 s (`--hours 0.011`) for the first 10 min — 14 runs — then to the end. 707 backfills, 0 gaps, 0 warnings |
+| I | 41 | **99 of 99 exact** — parts 3492/3492, aborts 282/282, E-stops 99/99, cmd fail 38/38, joint 24/24 | Passes, but the pruned path was **not** hit: SIM-001's entries 1–21 were deleted while FloorWatch (stopped after 3 min) had already received them, so nothing was missing — `Backfilling SIM-001: journal 21..53`, no `pruned` row. On 22 Oct entry 21 had not arrived, so the gap showed. Timing-dependent; the pruned path stays covered by the 22 Oct run and FloorWatch's tests |
+| J | 42 | **99 of 99 exact** — parts 3519/3519, aborts 264/264, E-stops 108/108, cmd fail 45/45, joint 23/23 | `loss 10% delay 20ms reorder 25% 50% duplicate 5%`; netem dropped 105544. 489 backfills, 0 gaps, 0 warnings |
+| K | 43 | **99 of 99 exact** — parts 3408/3408, aborts 261/261, E-stops 97/97, cmd fail 61/61, joint 13/13 | `--gcode` adds the 5 MB and 32 MB programs: 310 / 309 cycles of them on 9 machines, all counted. **No refusal** in the FloorWatch log (22 Oct: `… refused: 5243 chunks claimed`) and no log noise. FloorWatch `main` no longer logs a received program, so this run does not show that the 32 MB file reached the preview complete — check that in the window |
+
+FloorWatch log in every scenario: 0 warnings, 0 errors. The real agent (MES on, LinuxCNC partly running for the
+AXIS check of D + E + G) could not reach the namespaces and played no part. Result: **exit gate passed** on
+`main`, with the I and K notes above.
+
 After the last run: `sudo tc qdisc del dev lo root`, and set `monitor_pc_ip` back
 in the agent's config.
