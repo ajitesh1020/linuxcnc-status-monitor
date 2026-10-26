@@ -5,6 +5,14 @@ types, new values in an enum that consumers already treat as "unknown → keep".
 Anything that would make an old event invalid, or change the meaning of a
 field, goes into `contracts/mes/v2/`.
 
+## 1.2 — `atc_check` run mode
+
+- `execution.started` mode `atc_check`: an ATC tool pick/drop check run
+  (MillWright's generated repeatability program). Machine time, not production:
+  like `dryrun` / `frame` / `warmup` it is setup activity and never counts parts
+  (plan P4.3). Before 1.2 MillWright sent no execution events for these runs.
+  Additive: consumers keep an unknown mode as "not normal" (not production).
+
 ## 1.1 — `spool_full` (MES plan P2.4)
 
 - `scan.rejected_local` reason `spool_full`: the agent's MES spool is at its

@@ -36,7 +36,8 @@
         "dryrun",
         "probe",
         "frame",
-        "warmup"
+        "warmup",
+        "atc_check"
       ]
     },
     "wcs": {
