@@ -153,7 +153,7 @@ class StatusLoopTests(unittest.TestCase):
             status.find_config = lambda arg: None
             status._configure_logging = lambda dev, c: None
             status._parse_args = lambda: types.SimpleNamespace(
-                dev=False, config=None, check=False, mes_enroll=None)
+                dev=False, config=None, check=False, mes_enroll=None, mes_status=False)
             status.single_instance = lambda: object()
             status.USER_CONFIG_DIR = tmp.name
             status.UdpSender = FakeSender

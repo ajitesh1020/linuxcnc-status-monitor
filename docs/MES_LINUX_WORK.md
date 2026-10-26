@@ -234,6 +234,40 @@ Follow it exactly. Agent side:
 - Keys: `mes_service_url` (default `""` = not enrolled). `mes_enabled: false`
   means no forwarding either.
 
+### 4.7 Operator readout (P2.6)
+
+Added 26 Oct 2026 by the Linux session. The agent writes
+`~/linuxcnc-monitor-agent/mes_status.json` when `mes_enabled` is on (removed
+at start when it is off). Display only: nothing decides anything from it.
+
+```
+{"schema": "lcnc-agent.mes_status/1",
+ "updated_at_ms": 1793000000000,          wall clock of the write
+ "running": true,                         false = the agent stopped cleanly
+ "machine_uuid": "...",
+ "operator": {"name", "role", "assurance", "operator_session_id", "since"} | null,
+ "queue": {"pending": n, "bytes": n, "state": "ok" | "full"},
+ "link": {"state": "ok" | "offline" | "not_enrolled" | "cert_expired" | "rejected",
+          "last_ok_ms": n},               last_ok_ms absent if never
+ "scan": null | {"code", "status": "received" | "pending" | "bound" | "rejected",
+                 "reason", "at_ms"},      null until scanners (P2.1-P2.3)
+ "bound": []}                             items bound to this machine (P2.1-P2.3)
+```
+
+- Written by its own thread, atomically (temp file + `os.replace`), at most
+  twice a second and only on a change, but at least every 5 s. A reader treats
+  a file older than **15 s** as "agent not running", and a missing or
+  unparsable file as "unknown" (never an error dialog).
+- `operator` comes from MillWright's `operator.session_started` / `_ended`
+  events (latest in the outbox at agent start, then as they are copied).
+- Colours, the same in MillWright's strip and `lcnc-status-agent --mes-status`:
+  scan grey = received, amber = pending, green = bound, red = rejected; queue
+  red = full (new scans refused); link green = ok, amber = offline, grey =
+  not_enrolled, red = cert_expired / rejected.
+- MillWright reads it from the path in `[MW_MES] STATUS_FILE` (default
+  `~/linuxcnc-monitor-agent/mes_status.json`) and shows the strip only when
+  `[MW_MES] OUTBOX = 1`.
+
 ## 5. Tests that must exist
 
 - A: identity created once and reused; damaged file kept and replaced; field in
