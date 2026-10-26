@@ -12,14 +12,14 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 |---|---|---|---|---|
 | A | Stable machine identity (`machine_uuid`) | `feat/machine-identity` → `main` | agent #19 | **Merged** 22 Oct |
 | B | `monitor_interface` | `feat/monitor-interface` → `main` | agent #20 | **Merged** 22 Oct |
-| C | Fleet test exit gate (A–K + H3, L from A, on `main`) | — | — | Third run started 26 Oct on current `main` (see below) |
+| C | Fleet test exit gate (A–K + H3, L from A, on `main`) | — | — | **Passed** 26 Oct on `main`: 13 of 13 scenarios 99 of 99 exact (`docs/FLEET_TEST.md`) |
 | D | MillWright outbox | `feat/mes-outbox` → `main` | millwright #1 | **Merged** 26 Oct (with contract 1.1 re-vendor 7fb82ff); AXIS check **passed** 26 Oct |
 | E | MillWright run context | `feat/mes-run-context` → `main` | millwright #2 | **Merged** 26 Oct (base changed to `main` after #1; 488 tests pass on the combined branch); AXIS check **passed** 26 Oct |
 | F | Agent MES spool | `feat/mes-spool` | agent #22 | **Merged** 22 Oct |
 | G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check **passed** 26 Oct |
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs pending |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
-| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct) |
+| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -127,7 +127,7 @@ times (up to 20 min), so `SMOKE=1` does not shorten them.
 
 | Scenario | Result |
 |---|---|
-| A–K, H3 | running |
+| A–K, H3 | **all 99 of 99 exact**, 0 warnings / errors / gaps; done 15:23. I's pruned path not hit this time (timing); K: no F05 refusal any more. Details: `docs/FLEET_TEST.md` |
 
 ## AXIS check of D + E + G (26 Oct)
 
@@ -160,6 +160,25 @@ manager. Read-only results:
 2. The carried time of an aborted run is used for a Run From Here of a
    *different* program: the 37 s of `axis.ngc` was added to SJ-942's part.
 
+## J on the real agent (26 Oct)
+
+Site service from a separate FloorWatch `main` worktree (`~/fw-svc-src`, a3399b6), data
+`~/fw-service-test`, bound to **127.0.0.1:8443 only**, run with `~/fw-venv` (cryptography 50); left
+running at the user's request (background of the session: it stops when the session ends).
+`lcnc-status-agent --mes-enroll` enrolled OFC-PC (certificate to 2027-10-26). The enrol prompt does not
+accept piped input, so `mes_service_url` was set by hand with the user's OK (backup
+`config.yaml.bak-20261026-J`). After the restart all 26 spool events reached `raw_events` (event ids
+identical, 0 quarantine); spool all `acked`, `site_id` set. J's tests with `FLOORWATCH_DIR=~/fw-svc-src`:
+31 of 31 (the 5 real-service tests run instead of skip).
+
+## P2.6 operator readout (26 Oct)
+
+Agent #31 (merged): `agent_mes_status.py` writes `mes_status.json`; `--mes-status`; format in
+`MES_LINUX_WORK.md` §4.7. MillWright #4 (merged): MES box on the machine panel with `[MW_MES] OUTBOX = 1`.
+MillWright updated in `test_config` (backup 20261026-151754); .deb from 8436ef3 built. **Not yet seen
+working:** the .deb was not installed on this PC when checked (install log ends 13:02) and AXIS was not
+running, so the strip has not been checked in AXIS.
+
 ## Contract gaps found
 
 - ATC pick/drop check mode has no contract `mode` value: those runs get no
@@ -169,18 +188,20 @@ manager. Read-only results:
 
 ## Pending — needs the user
 
-1. **J on the real agent** (needs your OK: enrolment writes `mes_service_url`):
-   run the site service on 127.0.0.1 (§6), `lcnc-status-agent --mes-enroll …`
-   (`mes_enabled` is already on since the AXIS check), restart the agent, check
-   `raw_events` in the ledger.
-2. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
+1. **Install the P2.6 .deb** (`dist/linuxcnc-status-agent_1.6.0_all.deb`, from 8436ef3) on this
+   PC, restart the agent, open AXIS with `test_config`: check the MES box and `--mes-status`.
+2. **Two-PC J test:** the Windows PC's service address + a fresh code + OK to move the agent off
+   the loopback test service. Then stop `~/fw-service-test`'s service and remove it.
+3. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
    real program, `servo-thread.tmax` with the agent stopped vs running (user resets
    tmax with halcmd).
-3. **Package I:** say when the scanners are bought (plan §16 D1).
-4. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
+4. **Package I:** say when the scanners are bought (plan §16 D1).
+5. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
    choice; the CHANGELOG says 1.7.0.
 
 ## Pending — this session
 
-- Finish C, record it in `docs/FLEET_TEST.md`, open its PR (ask before pushing).
-- Remove `~/fw-test/gate2/agent-src` and `fw-src` worktrees after C.
+- C recorded in `docs/FLEET_TEST.md` (branch `docs/fleet-gate-2026-10-26`, push needs the user's OK).
+  Worktrees `~/fw-test/gate2/agent-src` and `fw-src` removed; logs kept in `~/fw-test/gate2/`.
+- Agent #30 (contract 1.2, `atc_check` mode, from the Windows session) open: once merged, MillWright can
+  send execution events for ATC pick/drop check runs.
