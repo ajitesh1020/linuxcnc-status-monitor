@@ -151,7 +151,8 @@ manager. Read-only results:
   operator session; agent start 0.13 s before MillWright's (inside the window).
 - `--check`: MES on, not enrolled. Agent log: no errors.
 
-**Agent bugs found (older cycle-time code, not D/E/G):**
+**Agent bugs found (older cycle-time code, not D/E/G)** — fixed in agent #28
+(merged 26 Oct; .deb built from 3c6e6a5, installed by the user 13:02):
 1. `program_tracker._MOTION_RE` counts `G4` (dwell) as a move. In SJ-942 the
    "first move" is the `G04 P3` on line 10; LinuxCNC never shows a dwell as
    `motion_line`, the first real move is line 20 (> 10 + 5 tolerance), so a run
@@ -168,16 +169,15 @@ manager. Read-only results:
 
 ## Pending — needs the user
 
-1. **Push OK** for this log branch.
-2. **Agent bugs 1 and 2** above: OK to fix (one branch, one PR)?
-3. **J on the real agent** (needs your OK: config change + agent restart): run the
-   site service on 127.0.0.1 (§6), `lcnc-status-agent --mes-enroll …`,
-   `mes_enabled: true`, restart the agent, check `raw_events` in the ledger.
-4. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
+1. **J on the real agent** (needs your OK: enrolment writes `mes_service_url`):
+   run the site service on 127.0.0.1 (§6), `lcnc-status-agent --mes-enroll …`
+   (`mes_enabled` is already on since the AXIS check), restart the agent, check
+   `raw_events` in the ledger.
+2. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
    real program, `servo-thread.tmax` with the agent stopped vs running (user resets
    tmax with halcmd).
-5. **Package I:** say when the scanners are bought (plan §16 D1).
-6. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
+3. **Package I:** say when the scanners are bought (plan §16 D1).
+4. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
    choice; the CHANGELOG says 1.7.0.
 
 ## Pending — this session
