@@ -26,7 +26,7 @@ install -d "$STAGE/DEBIAN" "$STAGE/usr/bin" "$SHARE" "$DOC" "$STAGE/usr/lib/syst
 # Program
 for f in status.py cycle_time_calculator.py program_tracker.py agent_net.py \
          agent_runtime.py agent_journal.py agent_gcode.py agent_packets.py \
-         agent_auth.py agent_identity.py agent_mes_spool.py agent_mes_link.py agent_mes_forward.py \
+         agent_auth.py agent_identity.py agent_mes_spool.py agent_mes_link.py agent_mes_forward.py agent_mes_status.py \
          config.example.yaml; do
     install -m 0644 "$ROOT/$f" "$SHARE/$f"
 done

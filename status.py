@@ -127,6 +127,7 @@ from agent_net import UdpSender
 import agent_mes_spool
 import agent_mes_link
 import agent_mes_forward
+import agent_mes_status
 import queue
 from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
@@ -732,6 +733,11 @@ def _parse_args() -> argparse.Namespace:
         help="Enrol this machine with the MES site service (https://<service>:8443) using the "
              "one-time code from 'floorwatch-service enroll-code', then exit.",
     )
+    parser.add_argument(
+        "--mes-status", action="store_true", default=False,
+        help="Print the MES readout (operator, last scan, queue, site link) the running agent "
+             "writes to mes_status.json, then exit.",
+    )
     parser.add_argument("--version", action="version",
                         version=f"lcnc-status-agent {AGENT_VERSION} (protocol {PROTOCOL_VERSION})")
     return parser.parse_args()
@@ -841,6 +847,10 @@ def main() -> None:
         return
     if args.mes_enroll:
         sys.exit(_run_enroll(cfg_path, cfg, machine_name, *args.mes_enroll))
+    if args.mes_status:
+        path = agent_mes_status.status_path(USER_CONFIG_DIR)
+        print("\n".join(agent_mes_status.format_lines(*agent_mes_status.read(path))))
+        return
 
     # One agent per user: a second copy would double-count parts.
     lock = single_instance()
@@ -976,6 +986,21 @@ def main() -> None:
         mes_forwarder = agent_mes_forward.Forwarder(
             mes_spool, cfg["mes_service_url"], agent_mes_forward.mes_dir(USER_CONFIG_DIR), machine_uuid)
         mes_forwarder.start()
+    # Operator readout (agent_mes_status.py, MES plan P2.6): own thread writes
+    # mes_status.json from the status dicts above; no I/O in the loop.
+    mes_status_writer = None
+    mes_status_file = agent_mes_status.status_path(USER_CONFIG_DIR)
+    if mes_spool:
+        def _mes_status_doc() -> Dict[str, Any]:
+            reader = mes_worker.reader if mes_worker else None
+            return agent_mes_status.build(
+                machine_uuid, mes_spool.stats,
+                mes_forwarder.status if mes_forwarder else None,
+                reader.operator if reader else None)
+        mes_status_writer = agent_mes_status.StatusWriter(mes_status_file, _mes_status_doc)
+        mes_status_writer.start()
+    else:
+        agent_mes_status.remove(mes_status_file)    # MES off: no readout left from before
     mes_counts = (0, 0)              # parts / aborts when the current cycle started
     packet_seq:              int   = 0
     last_sample_time:        float = 0.0
@@ -1252,6 +1277,8 @@ def main() -> None:
         calculator.abort_cycle()
     journal_srv.stop()
     journal.close()
+    if mes_status_writer:
+        mes_status_writer.stop()                  # last write: running = false
     if mes_forwarder:
         mes_forwarder.stop()
     if mes_worker:

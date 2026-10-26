@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 CURRENT_FILE = "current_execution.json"
 ACK_FILE = "mes_ack.json"
 OUTBOX_SOURCE = "millwright"
+OPERATOR_TYPES = ("operator.session_started", "operator.session_ended")
 MATCH_BEFORE_S = 3.0          # MillWright's start may be this much before the agent's
 MATCH_AFTER_S = 1.0           # ...or this much after (poll jitter of the two programs)
 RETRY_EVERY_S = 0.5           # re-read current_execution.json this often...
@@ -173,6 +174,33 @@ class OutboxReader:
         self.mw_data, self.spool = mw_data, spool
         self.db_path = os.path.join(mw_data, "millwright.db")
         self._stuck_logged = None
+        # Who is logged in on MillWright, for the operator readout (P2.6):
+        # {"name", "role", "assurance", "operator_session_id", "since"} or None.
+        # Replaced atomically; read by the mes-status thread.
+        self.operator: Optional[Dict[str, Any]] = None
+        self._op_epoch: Optional[str] = None
+        self._op_seq = 0
+
+    def _see_operator(self, seq: int, body: str) -> None:
+        """Follow operator.session_started / _ended (newer seq only)."""
+        if seq <= self._op_seq:
+            return
+        try:
+            ev = json.loads(body)
+            t = ev.get("type")
+            if t not in OPERATOR_TYPES:
+                return
+            if t == "operator.session_started":
+                p, c = ev.get("payload") or {}, ev.get("correlation") or {}
+                op = {"name": p.get("operator_name"), "role": p.get("role"),
+                      "assurance": p.get("assurance"),
+                      "operator_session_id": c.get("operator_session_id"),
+                      "since": ev.get("occurred_at")}
+            else:
+                op = None
+        except (ValueError, AttributeError):
+            return
+        self._op_seq, self.operator = seq, op
 
     def _connect(self) -> sqlite3.Connection:
         # Read-only: the agent never writes millwright.db.
@@ -197,6 +225,12 @@ class OutboxReader:
             if row is None:
                 return 0
             epoch = row[0]
+            if epoch != self._op_epoch:               # start (or a new database): latest login state
+                self._op_epoch, self._op_seq, self.operator = epoch, 0, None
+                last = db.execute("SELECT seq, body FROM mw_outbox WHERE type IN (?, ?) "
+                                  "ORDER BY seq DESC LIMIT 1", OPERATOR_TYPES).fetchone()
+                if last:
+                    self._see_operator(*last)
             cur = self.spool.cursor(OUTBOX_SOURCE)
             pos = cur[1] if cur and cur[0] == epoch else 0
             rows = db.execute("SELECT seq, body FROM mw_outbox WHERE seq > ? ORDER BY seq LIMIT ?",
@@ -209,6 +243,8 @@ class OutboxReader:
         if cur is not None and cur[0] != epoch:
             logger.warning("MillWright outbox has a new epoch %s (was %s): reading it from the start",
                            epoch, cur[0])
+        for seq, body in rows:
+            self._see_operator(seq, body)
         if not rows:
             if cur is not None and cur[0] == epoch:
                 self.write_ack(epoch, pos)            # e.g. after an agent restart

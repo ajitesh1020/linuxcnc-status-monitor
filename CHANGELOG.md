@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Operator readout `agent_mes_status.py`** (MES plan P2.6). With
+  `mes_enabled` on, an own thread writes `~/linuxcnc-monitor-agent/mes_status.json`
+  (operator logged in on MillWright, last scan and bound items once scanners
+  exist, spool queue, site link) atomically, at most twice a second and at least
+  every 5 s; `running: false` on a clean stop; removed at start when MES is off.
+  MillWright's machine panel shows it as an MES strip;
+  `lcnc-status-agent --mes-status` prints it, with "agent NOT RUNNING" when the
+  file is over 15 s old. Format: `docs/MES_LINUX_WORK.md` §4.7.
 - **MES enrolment and forwarder `agent_mes_forward.py`** (MES plan P2.5,
   package J; key `mes_service_url`). `lcnc-status-agent --mes-enroll
   https://<service>:8443 <code>` fetches the site CA and stops — without
