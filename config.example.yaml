@@ -91,6 +91,10 @@ site_key: ""
 mes_enabled: false
 mes_spool_mb: 1024          # disk budget; when full, new events are refused, never dropped
 mes_millwright_config: ""   # LinuxCNC config folder with MillWright's mw_data/ ("" = no MillWright)
+# MES site service the spool is forwarded to. Set by
+#   lcnc-status-agent --mes-enroll https://<service>:8443 <code>
+# (with your OK). "" = not enrolled: events stay in the spool.
+mes_service_url: ""
 
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen

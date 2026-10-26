@@ -335,10 +335,27 @@ class Spool:
         return (row[0], row[1]) if row else None
 
     # -- forwarding (used by the forwarder, package J) -----------------------
-    def pending(self, limit: int = 200) -> List[Tuple[int, bytes]]:
+    def pending(self, limit: int = 200, types: Optional[Iterable[str]] = None) -> List[Tuple[int, bytes]]:
+        """Oldest pending rows first; with `types`, only rows of those types
+        (the others stay pending)."""
+        sql, args = "SELECT seq, body FROM spool WHERE state='pending'", []
+        if types is not None:
+            types = list(types)
+            if not types:
+                return []
+            sql += " AND type IN (%s)" % ",".join("?" * len(types))
+            args.extend(types)
+        sql += " ORDER BY seq LIMIT ?"
+        args.append(int(limit))
         with self._lock:
-            return [(s, b.encode("utf-8")) for s, b in self._db.execute(
-                "SELECT seq, body FROM spool WHERE state='pending' ORDER BY seq LIMIT ?", (limit,))]
+            return [(s, b.encode("utf-8")) for s, b in self._db.execute(sql, args)]
+
+    def set_site_id(self, site_id: str) -> None:
+        """After enrolment (§4.4): the site this machine belongs to. Events made
+        from now on carry it; earlier ones keep null (the service fills it)."""
+        with self._lock:
+            if self._meta("site_id") != site_id:
+                self._set_meta("site_id", site_id)
 
     def mark_acked(self, seqs: Iterable[int]) -> None:
         now_ms = int(self.now() * 1000)
