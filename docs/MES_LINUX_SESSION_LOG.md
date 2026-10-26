@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 26 Oct 2026 (AXIS check).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 26 Oct 2026 (P2.6 AXIS check, MillWright run-end fix).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -175,9 +175,18 @@ identical, 0 quarantine); spool all `acked`, `site_id` set. J's tests with `FLOO
 
 Agent #31 (merged): `agent_mes_status.py` writes `mes_status.json`; `--mes-status`; format in
 `MES_LINUX_WORK.md` §4.7. MillWright #4 (merged): MES box on the machine panel with `[MW_MES] OUTBOX = 1`.
-MillWright updated in `test_config` (backup 20261026-151754); .deb from 8436ef3 built. **Not yet seen
-working:** the .deb was not installed on this PC when checked (install log ends 13:02) and AXIS was not
-running, so the strip has not been checked in AXIS.
+MillWright updated in `test_config` (backup 20261026-151754); .deb from 8436ef3 built.
+**Checked in AXIS 26 Oct (17:08-17:12):** .deb installed by the user, agent restarted; `mes_status.json`
+refreshed every 5 s; `--mes-status` and the MES box agreed at every step (queue 11 → 16 → 18, link
+offline/amber, operator shown after login). ATC panel run of `LX052_drill_ATC.ngc` (`selected_tools`,
+generated `atc_run_171042.ngc`): `execution.started` / `execution.ended` (aborted, line 130 of 158) and the
+agent's `cycle.observed` (aborted, explicit, same `execution_id`) agree.
+
+**MillWright bug found (fixed on branch `fix/run-end-outcome`, cf7bd0d, millwright #6 open):** a plain AXIS run of
+LX052 stopped at line 44 of 634 kept `motion_line` = 44 at idle, so MillWright logged it `completed` (agent:
+aborted), counted it as a job and dropped the resume line. New `run_end.py` (the agent's rule: motion_line at
+idle at or past the last move before M2/M30, not the stale line of the previous run; old rule when the end
+cannot be judged) used by `mw_audit`, `machine_panel` and `program_controller`. 520 tests pass.
 
 ## Contract gaps found
 
@@ -188,8 +197,8 @@ running, so the strip has not been checked in AXIS.
 
 ## Pending — needs the user
 
-1. **Install the P2.6 .deb** (`dist/linuxcnc-status-agent_1.6.0_all.deb`, from 8436ef3) on this
-   PC, restart the agent, open AXIS with `test_config`: check the MES box and `--mes-status`.
+1. **MillWright #6 (`fix/run-end-outcome`):** review and merge; after merge, reinstall MillWright
+   in `test_config` and stop a run mid-program in AXIS (expect `aborted`, no job counted).
 2. **Two-PC J test:** the Windows PC's service address + a fresh code + OK to move the agent off
    the loopback test service. Then stop `~/fw-service-test`'s service and remove it.
 3. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
@@ -203,5 +212,5 @@ running, so the strip has not been checked in AXIS.
 
 - C recorded in `docs/FLEET_TEST.md` (branch `docs/fleet-gate-2026-10-26`, push needs the user's OK).
   Worktrees `~/fw-test/gate2/agent-src` and `fw-src` removed; logs kept in `~/fw-test/gate2/`.
-- Agent #30 (contract 1.2, `atc_check` mode, from the Windows session) open: once merged, MillWright can
-  send execution events for ATC pick/drop check runs.
+- (Done) Agent #30 (contract 1.2) and #32 (fleet gate docs) merged; the installed .deb has contract 1.2.
+- Link state label: `not_enrolled -> offline` is logged at start on an enrolled PC (initial label only).
