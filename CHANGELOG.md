@@ -86,6 +86,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   there.
 - MES contract copy updated to 1.1: `scan.rejected_local` reason `spool_full`
   (for the spool, MES plan P2.4).
+- MES contract copy updated to 1.2: `execution.started` mode `atc_check`, for
+  MillWright's ATC pick/drop check runs. Needed before MillWright sends them:
+  the spool checks MillWright's events against this copy.
 
 ### Fixed
 

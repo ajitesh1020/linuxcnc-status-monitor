@@ -47,6 +47,8 @@ Done so far (all on `main` of their repos, or open PRs about to be merged):
 | P0.1, P0.3, P0.7, P0.9 | FloorWatch PRs #33, #38, #35, #37 |
 | P0.6 FloorWatch side (machines keyed by `machine_uuid`), P1.7 "MES-capable agent" display | FloorWatch PRs #40, #41 |
 | Contract 1.1: `scan.rejected_local` reason `spool_full` | FloorWatch PR #39; copy in this repo (PR #21) |
+| Contract 1.2: `execution.started` mode `atc_check` (ATC pick/drop check runs) | FloorWatch PR #48; copies: this repo and MillWright (re-vendor PRs) |
+| Site service as a Windows service, single-instance lock, backup / restore (P3.8) | FloorWatch PR #46; FloorWatch `docs/MES_SERVICE_OPERATIONS.md` |
 | Site service: ledger, ingestion and receipts; private CA, enrolment, HTTPS with client certificates (P3.1–P3.3) | FloorWatch PRs #42, #43; API: FloorWatch `docs/MES_SERVICE_API.md` |
 
 The Windows session does next, in parallel with you: the rest of Phase 3 (the
