@@ -507,7 +507,8 @@ class _CycleStateMachine:
         if self._state == self.IDLE:
             if is_running:
                 self._tracker.begin(self._idle_motion_line, self._idle_current_line)
-                self._calc.start_cycle(run_from_here=None)
+                self._calc.start_cycle(run_from_here=None,
+                                       program=self._scanner.info.path or None)
                 self._track(motion_line, current_line)
                 self._state = self.RUNNING
             else:

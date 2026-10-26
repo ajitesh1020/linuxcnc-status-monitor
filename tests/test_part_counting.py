@@ -20,6 +20,17 @@ PROGRAM = (["%", "(splash)", "G21 G90", "T1 M6", "M3 S8000"]
            + ["G0 Z10", "M5", "M30", "%"])
 
 
+# The header of SJ-942_Cutting1_2.NC (AXIS check, 26 Oct 2026): a G04 dwell on
+# line 10, then variables; the first real move is line 20.
+DWELL_PROGRAM = (["(TOOLDIA 2.0000)", "(GERBER FILE)", "(HEADER_BEGIN)", "",
+                  "G90 (Absolute)", "G21", "G64 P0.01", "G54", "M3 S40000", "G04 P3",
+                  "(HEADER_END)", "(====)", "#<Z_Retract> = 6.0000",
+                  "#<Z_Depth> = -5.5000", "#<Z_Feed> = 400", "#<XY_Feed> = 600",
+                  "(====)", "G21", "M3 S40000", "G00 Z20.000"]
+                 + [f"G01 X{i} Y{i} F600" for i in range(100)]
+                 + ["G00 Z#<Z_Retract>", "M5", "M30"])
+
+
 class ProgramScanTests(unittest.TestCase):
     def test_landmarks(self):
         p = ProgramInfo.from_lines(PROGRAM)
@@ -38,6 +49,20 @@ class ProgramScanTests(unittest.TestCase):
         self.assertEqual(p.first_motion_line, 4)
         self.assertEqual(p.end_line, 5)
 
+    def test_dwell_is_not_a_move(self):
+        for dwell in ("G04 P3", "G4 P0.5", "g4p2", "G004 P1"):
+            p = ProgramInfo.from_lines(["G21", dwell, "M3 S1000", "G0 X1", "G4 P1", "M2"])
+            self.assertEqual(p.first_motion_line, 4, dwell)
+            self.assertEqual(p.tail_line, 4, dwell)       # a trailing dwell is not the tail
+
+    def test_g0_to_g3_and_canned_cycles_are_still_moves(self):
+        for move in ("G0", "G00", "G1 F100", "G2", "G03", "G38.2", "G81", "G73"):
+            p = ProgramInfo.from_lines(["G21", move, "M2"])
+            self.assertEqual(p.first_motion_line, 2, move)
+        for other in ("G40", "G43 H1", "G41.1", "G49", "G4"):
+            p = ProgramInfo.from_lines(["G21", other, "M2"])
+            self.assertEqual(p.first_motion_line, -1, other)
+
     def test_m20_and_m300_are_not_program_end(self):
         p = ProgramInfo.from_lines(["G0 X1", "M20", "M300", "G0 X2", "M02"])
         self.assertEqual(p.end_line, 5)
@@ -47,8 +72,8 @@ class _Machine:
     """Feeds (motion_line, current_line) samples through tracker + calculator
     exactly as status.py's state machine does."""
 
-    def __init__(self):
-        self.prog = ProgramInfo.from_lines(PROGRAM)
+    def __init__(self, program=PROGRAM, path=None):
+        self.prog = ProgramInfo.from_lines(program, path=path or "")
         self.calc = CycleTimeCalculator()
         self.tracker = CycleLineTracker()
         self.idle = (0, 0)
@@ -61,10 +86,14 @@ class _Machine:
             self.calc.classify_start(rfh)
             self.calc.set_progress(self.tracker.progress(self.prog))
 
+    def load(self, program, path):
+        """Load another file, as the operator does in AXIS."""
+        self.prog = ProgramInfo.from_lines(program, path=path)
+
     def run(self, lines, duration_ms=60_000):
         """lines: executed motion lines in order; the cycle then goes idle."""
         self.tracker.begin(*self.idle)
-        self.calc.start_cycle(run_from_here=None)
+        self.calc.start_cycle(run_from_here=None, program=self.prog.path or None)
         # First tick after start still shows the previous run's (stale) line.
         self._track(*self.idle)
         for ln in lines:
@@ -133,6 +162,44 @@ class PartCountingScenarioTests(unittest.TestCase):
         self.assertEqual(snap.parts_produced, 1)
         self.assertEqual(snap.abort_count, 1)             # only the first stop
         self.assertEqual(snap.last_completed_ms, 30_000)
+
+
+    def test_dwell_before_first_move_is_still_from_top(self):
+        # The AXIS check case: first move seen is line 20, the dwell on line 10.
+        m = _Machine(DWELL_PROGRAM, "/nc/sj942.ngc")
+        snap = m.run(list(range(20, 122)))
+        self.assertEqual(snap.parts_produced, 1)
+        self.assertEqual(snap.run_from_here_count, 0)
+
+    def test_aborted_part_is_not_carried_into_another_program(self):
+        # The AXIS check case: axis.ngc aborted, then a different file run.
+        m = _Machine(PROGRAM, "/nc/a.ngc")
+        snap = m.run(list(range(6, 56)), duration_ms=37_000)    # abort at ~half
+        self.assertTrue(snap.part_in_progress)
+        m.load(PROGRAM, "/nc/b.ngc")
+        snap = m.run(list(range(50, 107)), duration_ms=98_000)  # mid-start, other file
+        self.assertEqual(snap.parts_produced, 1)
+        self.assertEqual(snap.last_completed_ms, 98_000)        # no 37 s carried
+        self.assertEqual(snap.partial_parts, 1)                 # a.ngc's part
+        self.assertAlmostEqual(snap.partial_part_equiv, 0.5, places=1)
+        self.assertEqual(snap.abort_count, 1)
+
+    def test_aborted_part_then_other_program_from_top(self):
+        m = _Machine(PROGRAM, "/nc/a.ngc")
+        m.run(list(range(6, 56)), duration_ms=37_000)
+        m.load(DWELL_PROGRAM, "/nc/b.ngc")
+        snap = m.run(list(range(20, 122)), duration_ms=98_000)
+        self.assertEqual((snap.parts_produced, snap.partial_parts), (1, 1))
+        self.assertEqual(snap.run_from_here_count, 0)
+        self.assertEqual(snap.last_completed_ms, 98_000)
+
+    def test_same_file_still_carries_time(self):
+        m = _Machine(PROGRAM, "/nc/a.ngc")
+        m.run(list(range(6, 56)), duration_ms=30_000)
+        m.load(PROGRAM, "/nc/a.ngc")                           # reloaded, same file
+        snap = m.run(list(range(50, 107)), duration_ms=35_000)
+        self.assertEqual(snap.last_completed_ms, 65_000)
+        self.assertEqual(snap.partial_parts, 0)
 
 
 if __name__ == "__main__":
