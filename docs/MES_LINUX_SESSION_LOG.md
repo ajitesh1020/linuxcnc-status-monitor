@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 27 Oct 2026 (version 1.7.0, H impact runs passed).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 27 Oct 2026 (version 1.7.0, H impact runs passed, pick/drop Stop test passed).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -317,5 +317,23 @@ within seconds of starting (queue 38 → 42).
   dd1aa5e, 531 tests). (2) Agent packets showed `axis.ngc` for the whole 15:24 run although the MES record
   was right: a time-window match now also sets the program (agent `fix/time-window-program`, 248 tests).
   Still to do: a run with **Stop** during T9 (the abort rule is not yet seen on the machine).
+  Agent #39 and millwright #9 merged; MillWright reinstalled in `test_config` 15:42 (backup 20261027-154226,
+  `OUTBOX = 1` kept); .deb installed by the user.
+- **Pick/drop check after #39 / #9 (27 Oct):**
+
+  | Run | Stop | MillWright | Agent |
+  |---|---|---|---|
+  | 15:44 | none | completed, no job | completed, `time_window`, `atc_pickdrop_154426.ngc` in packets |
+  | 15:48 | after T9, last ~2 s | **aborted**, no job | **completed** (part counted), `explicit` |
+  | 16:01 | during T8 | aborted, no job | aborted, `explicit`, abort #1, no part |
+
+  **Pass** for a Stop during a tool change (16:01, traced): the Stop hit inside `rack_change.ngc`
+  (`call_level` 1, `read_line` 29); LinuxCNC then showed the program at `motion_line` 0, `read_line` 0, then
+  `axis.ngc`. Both said aborted.
+  **Open (edge case):** a Stop after the last tool change, during the program's own `G4 P2` / `G53 G0 Z76`
+  before M30 (15:48). After the last M6 LinuxCNC has already read M30 (`read_line` 27) and keeps showing the
+  remap's line 110 through the dwell and the Z move, the same as a normal end, so the agent says completed.
+  MillWright said aborted; why it differs is not known yet (no trace of that run). Needs a trace of a Stop in
+  those last seconds before a fix is chosen.
 - The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
   spool. Start it again to drain them, or wait for the two-PC test.
