@@ -901,6 +901,7 @@ def main() -> None:
     state_machine = _CycleStateMachine(calculator, scanner)
     program_file  = ProgramFile()        # subroutine folders set from the INI once connected
     program_ini   = None
+    cycle_program = ""                   # program of the running cycle (status loop)
     site_key      = key_bytes(cfg["site_key"])
     if site_key is not None and cfg_path and readable_by_others(cfg_path):
         logger.warning("%s holds the site key but other users can read it: "
@@ -1133,6 +1134,18 @@ def main() -> None:
                     mes_link.poll()
             except Exception as exc:
                 logger.error("MES cycle link: %s", exc)
+        # A run that starts inside a subroutine (a program whose first line is
+        # M6, opened and started at once) begins with the file loaded before;
+        # the program shows once LinuxCNC is back in it.
+        if current_cycle_state in ("RUNNING", "PAUSED"):
+            if previous_cycle_state not in ("RUNNING", "PAUSED"):
+                cycle_program = file_path
+            elif file_path and file_path != cycle_program and not in_subroutine:
+                logger.info("Cycle program is %s (started inside a subroutine).", file_path)
+                cycle_program = file_path
+                calculator.set_program(file_path)
+                if mes_link:
+                    mes_link.set_program(file_path)
 
         # ------------------------------------------------------------------
         # Everything below runs at the packet cadence, or at once when the

@@ -440,6 +440,38 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual(packets[-1]["file_name"], "atc_pickdrop_1.ngc")
         self.assertNotIn("rack_change.ngc", {p["file_name"] for p in packets})
 
+    def test_program_opened_and_started_inside_the_remap(self):
+        # AXIS check 27 Oct 14:30: axis.ngc loaded; MillWright opens the pick/drop program and starts it at
+        # once, so the agent first sees the run inside rack_change.ngc. After the last M6 LinuxCNC is back in
+        # the program while motion still runs the remap's moves (its lines 98, 103, 110 in a 7-line file).
+        import uuid as u
+        prog, sub, run = self._pickdrop()
+        cfg_dir = os.path.dirname(prog)
+        other = os.path.join(cfg_dir, "axis.ngc")
+        with open(other, "w") as f:
+            f.write("G21\n" + "G1 X1 Y1 F100\n" * 150 + "M2\n")
+        os.makedirs(os.path.join(cfg_dir, "mw_data"))
+        eid = str(u.uuid4())
+        with open(os.path.join(cfg_dir, "mw_data", "current_execution.json"), "w") as f:
+            json.dump({"execution_id": eid, "started_at": real_time.strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z", real_time.gmtime()), "program_path": prog, "run_file": prog,
+                "mode": "atc_check", "station_id": str(u.uuid4()), "operator_session_id": None}, f)
+        run = [r for r in run if r[2] not in ("file", "call_level", "motion_line")]
+        run += [(0.0, 99.0, "file", other), (0.0, 99.0, "call_level", 0),
+                (4.0, 9.0, "file", sub), (4.0, 9.0, "call_level", 1),          # both M6, one long remap
+                (9.0, 99.0, "file", prog)]
+        run += [(4.0 + i * 0.5, 4.5 + i * 0.5, "motion_line", 90 + i) for i in range(10)]
+        run += [(9.0, 9.5, "motion_line", 98), (9.5, 10.0, "motion_line", 103),
+                (10.0, 10.5, "motion_line", 110), (10.5, 99.0, "motion_line", 6)]
+        run += [(12.0, 99.0, "file", other)]                                   # MillWright reopens axis.ngc
+        _, packets, _ = self.run_agent(run, stop_at=16.0, mes_enabled=True, mes_millwright_config=cfg_dir)
+        last = packets[-1]
+        self.assertEqual((last["parts_produced"], last["abort_count"], last["run_from_here_count"]), (1, 0, 0))
+        (c,) = self._cycles()
+        self.assertEqual((c["payload"]["program_path"], c["payload"]["outcome"], c["payload"]["correlation_method"]),
+                         (prog, "completed", "explicit"))
+        self.assertEqual(c["correlation"]["execution_id"], eid)
+
     def test_agent_stopped_mid_run_is_unknown_not_an_abort(self):
         _cfg, prog, run = self._program()
         run = [(r[0], 99.0 if r[2] in ("task_mode", "interp_state") else r[1], r[2], r[3]) for r in run]

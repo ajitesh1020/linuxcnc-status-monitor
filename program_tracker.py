@@ -79,6 +79,16 @@ class ProgramInfo:
         self.first_motion_line = first_motion_line
         self.tail_line         = tail_line
         self.end_line          = end_line
+        # 1 byte per line, 1 = the line has a move (empty = not scanned).
+        self.motion_mask       = bytearray()
+
+    def is_move_line(self, line: int) -> bool:
+        """Could motion_line be `line` of this program? A subroutine's moves
+        still running after LinuxCNC is back in the program (an M6 remap's
+        last moves) carry the subroutine's line numbers. Unknown = yes."""
+        if not self.motion_mask:
+            return True
+        return 0 < line <= len(self.motion_mask) and self.motion_mask[line - 1] == 1
 
     @classmethod
     def from_lines(cls, lines, path: str = "") -> "ProgramInfo":
@@ -86,7 +96,9 @@ class ProgramInfo:
         motion_lines = []
         end_word = -1          # first M2/M30 — nothing after it executes
         last_percent = -1
+        mask = bytearray()
         for lineno, raw in enumerate(lines, start=1):
+            mask.append(0)
             stripped = raw.strip()
             if first_exec == -1 and not _SKIP_RE.match(stripped):
                 first_exec = lineno
@@ -96,8 +108,10 @@ class ProgramInfo:
             code = _code_part(stripped)
             if end_word == -1 and code and _END_WORD_RE.search(code):
                 end_word = lineno
-            if end_word == -1 and _is_motion(code):
-                motion_lines.append(lineno)
+            if _is_motion(code):
+                mask[-1] = 1
+                if end_word == -1:
+                    motion_lines.append(lineno)
         end_line = end_word if end_word != -1 else (
             last_percent if last_percent > max(first_exec, 1) else -1)
         info = cls(
@@ -107,6 +121,7 @@ class ProgramInfo:
             tail_line=motion_lines[-1] if motion_lines else -1,
             end_line=end_line,
         )
+        info.motion_mask = mask
         return info
 
     # ------------------------------------------------------------------
@@ -308,6 +323,8 @@ class CycleLineTracker:
     def sample(self, motion_line: int, current_line: int, prog: ProgramInfo) -> None:
         motion_line  = int(motion_line or 0)
         current_line = int(current_line or 0)
+        if motion_line > 0 and not prog.is_move_line(motion_line):
+            motion_line = 0            # not a move of this program (a subroutine's)
         if not self._motion_live and motion_line > 0 and motion_line != self._stale_motion:
             self._motion_live = True
         if self._motion_live and motion_line > 0:

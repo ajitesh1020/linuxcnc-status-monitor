@@ -146,6 +146,16 @@ class CycleLink:
             c["next_try"] = now + RETRY_EVERY_S
             self._try()
 
+    def set_program(self, file: str) -> None:
+        """The cycle's program turned out to be another file (the run started
+        inside a subroutine): record it and look for MillWright's run again."""
+        c = self.cycle
+        if c is None or not file or file == c["program_path"]:
+            return
+        c["program_path"] = file
+        if c["method"] == "none" and self.mw_data:
+            self._try()
+
     def end(self, outcome: str) -> None:
         c, self.cycle = self.cycle, None
         if c is None:

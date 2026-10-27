@@ -18,6 +18,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   keep the program loaded before; their line numbers are ignored. Applies to
   cycle tracking, `file_name` in packets and the journal, the G-code sent to
   the dashboard and `cycle.observed`.
+- **A run that starts inside a subroutine gets its program when it shows.**
+  MillWright opens the pick/drop check and starts it at once, so the run began
+  in the remap with the file loaded before (`axis.ngc`) as its program. When
+  LinuxCNC is back in a program file during the run, the cycle, its part and
+  its `cycle.observed` take that file and MillWright's run is looked for
+  again. Also, a `motion_line` that is not a move line of the program is
+  ignored: the remap's last moves run after LinuxCNC is back in the program and
+  carry the remap's line numbers (98, 103, 110 in a 28-line program), which
+  made the run look like Run From Here and could count a stop in the last
+  tool change as a finished part.
 - **Agent stopped during a run: outcome unknown, not an abort.** A stop or
   restart of the agent (e.g. a package upgrade) while a program runs counted
   an abort and wrote no MES record. Now nothing is counted and a

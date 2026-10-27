@@ -242,6 +242,19 @@ class SubroutineTests(unittest.TestCase):
         self.assertEqual(pf.update(sub, 0, True), (sub, False))
         self.assertEqual(ProgramFile().update(sub, 0, True), (sub, False))  # no INI folders known
 
+    def test_lines_without_a_move_are_not_motion_lines(self):
+        prog = ProgramInfo.from_lines(["G21", "M6 T1", "G4 P2", "G53 G0 Z50", "M30", "G0 X1"])
+        self.assertEqual([n for n in range(0, 9) if prog.is_move_line(n)], [4, 6])
+        self.assertTrue(ProgramInfo().is_move_line(98))                     # not scanned: no check
+        t = CycleLineTracker()
+        t.begin(0, 0)
+        for line in (98, 103, 110):                                         # the remap's last moves
+            t.sample(line, 4, prog)
+        self.assertIsNone(t.start_line)
+        self.assertFalse(t.reached_end(prog))                               # 110 is not past the tail
+        t.sample(4, 5, prog)
+        self.assertEqual((t.start_line, t.is_run_from_here(prog)), (4, False))
+
     def test_tracker_ignores_lines_inside_a_subroutine(self):
         prog = ProgramInfo.from_lines(["G21", "M6 T1", "G4 P2", "G53 G0 Z50", "M30"])
         t = CycleLineTracker()

@@ -193,6 +193,21 @@ class CycleTimeCalculator:
             else:
                 self._classify_unsafe(run_from_here)
 
+    def set_program(self, program: Optional[str]) -> None:
+        """The running cycle's program turned out to be another file (it was
+        started inside a subroutine, before LinuxCNC showed the program)."""
+        with self._lock:
+            if not self._state.running or program is None or program == self._state.program:
+                return
+            self._state.program = program
+            if (self._part_open and self._open_program is not None
+                    and program != self._open_program):
+                self._log(logging.WARNING,
+                          "Program changed (%s -> %s) — the unfinished part of "
+                          "the previous program is not continued.",
+                          self._open_program, program)
+                self._finalize_partial_unsafe()
+
     def classify_start(self, run_from_here: bool) -> None:
         """Record where the running cycle started. Only the first call counts."""
         with self._lock:
