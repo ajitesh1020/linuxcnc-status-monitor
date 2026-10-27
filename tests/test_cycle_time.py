@@ -64,5 +64,13 @@ class RunFromHereContinuationTests(unittest.TestCase):
         self.assertEqual(snap.parts_produced, 0)
 
 
+    def test_drop_cycle_counts_nothing(self):
+        self.calc.start_cycle(run_from_here=False)
+        self.calc.drop_cycle()
+        snap = self.calc.snapshot()
+        self.assertFalse(snap.is_running)
+        self.assertEqual((snap.parts_produced, snap.abort_count, snap.partial_parts), (0, 0, 0))
+        self.calc.drop_cycle()                               # nothing running: no-op
+
 if __name__ == "__main__":
     unittest.main()

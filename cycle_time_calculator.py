@@ -119,7 +119,8 @@ class CycleTimeCalculator:
         resume_cycle()              — feed hold released
         signal_cycle_complete()     — motion_line reached M2/M30 end line
         stop_cycle()                — LinuxCNC transitions to IDLE
-        abort_cycle()               — E-stop / SIGTERM while running
+        abort_cycle()               — E-stop / machine off while running
+        drop_cycle()                — the agent stops while running (outcome unknown)
         reset_stats()               — operator-initiated counter reset
     """
 
@@ -315,10 +316,23 @@ class CycleTimeCalculator:
 
             self._state = _CycleState()   # reset for next cycle
 
+    def drop_cycle(self) -> None:
+        """
+        The agent stops while a cycle runs: how it ends is not seen, so it is
+        neither a part nor an abort (the machine may well finish it).
+        """
+        with self._lock:
+            if not self._state.running:
+                return
+            self._log(logging.WARNING,
+                      "Agent stopping during a cycle (%d ms, %.0f%% done): outcome unknown, "
+                      "not counted as a part or an abort.",
+                      self._elapsed_ms_unsafe(), self._progress_unsafe() * 100)
+            self._state = _CycleState()
+
     def abort_cycle(self) -> None:
         """
-        Explicit abort — called on E-stop, machine off, stop-while-paused, or
-        process shutdown while running. Always recorded as abort; the part is
+        Explicit abort — called on E-stop, machine off or stop-while-paused. Always recorded as abort; the part is
         left open so Run From Here can still finish it.
         """
         with self._lock:

@@ -393,5 +393,61 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual(len(packets), 3)                  # start, 30 s, 60 s
 
 
+    # --- programs that call subroutines (pick/drop check, 27 Oct 2026) -------------------------------------
+    def _pickdrop(self):
+        """A MillWright pick/drop check: line 2 and 4 are M6, remapped to macros/rack_change.ngc (in the
+        INI's SUBROUTINE_PATH). While LinuxCNC is in the remap, stat.file is rack_change.ngc, call_level 1
+        and motion_line counts its lines (90..95)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        os.makedirs(os.path.join(tmp.name, "macros"))
+        ini = os.path.join(tmp.name, "m.ini")
+        with open(ini, "w") as f:
+            f.write("[RS274NGC]\nSUBROUTINE_PATH = macros\nUSER_M_PATH = macros\n")
+        sub = os.path.join(tmp.name, "macros", "rack_change.ngc")
+        with open(sub, "w") as f:
+            f.write("o<rack_change> sub\n" + "G0 X1\n" * 100 + "o<rack_change> endsub\nM2\n")
+        prog = os.path.join(tmp.name, "atc_pickdrop_1.ngc")
+        with open(prog, "w") as f:
+            f.write("G21 G90 G94\nM6 T1 G43 H1\nG4 P2\nM6 T2 G43 H2\nG4 P2\nG53 G0 Z50\nM30\n")
+        # The agent's first sample is at about 2 s: the run starts at 4 s.
+        run = [(0.0, 99.0, "ini_filename", ini), (0.0, 99.0, "file", prog), (0.0, 99.0, "call_level", 0),
+               (4.0, 11.0, "task_mode", 2), (4.0, 11.0, "interp_state", 2)]
+        for a, b in ((4.0, 6.0), (6.5, 8.5)):                     # the two tool changes
+            run += [(a, b, "file", sub), (a, b, "call_level", 1)]
+            run += [(a + i * 0.3, a + (i + 1) * 0.3, "motion_line", 90 + i) for i in range(6)]
+        run += [(6.0, 6.5, "motion_line", 95), (8.5, 99.0, "motion_line", 6)]   # back in the program
+        return prog, sub, run
+
+    def test_subroutine_file_is_not_the_program(self):
+        prog, _sub, run = self._pickdrop()
+        _, packets, journal = self.run_agent(run, stop_at=16.0, mes_enabled=True)
+        last = packets[-1]
+        self.assertEqual((last["parts_produced"], last["abort_count"], last["run_from_here_count"]), (1, 0, 0))
+        self.assertTrue(all(p["file_name"] == "atc_pickdrop_1.ngc" for p in packets))
+        self.assertTrue(all(e["file_name"] == "atc_pickdrop_1.ngc" for e in journal))
+        (c,) = self._cycles()
+        self.assertEqual((c["payload"]["program_path"], c["payload"]["outcome"]), (prog, "completed"))
+
+    def test_agent_started_inside_a_subroutine_knows_the_program_later(self):
+        # The agent (re)starts during the first tool change: it has never seen the program file.
+        _prog, sub, run = self._pickdrop()
+        run = [r for r in run if r[2] not in ("task_mode", "interp_state")]
+        run += [(0.0, 11.0, "task_mode", 2), (0.0, 11.0, "interp_state", 2),
+                (0.0, 6.0, "file", sub), (0.0, 6.0, "call_level", 1)]
+        _, packets, _ = self.run_agent(run, stop_at=16.0)
+        self.assertEqual(packets[0]["file_name"], "")              # not rack_change.ngc
+        self.assertEqual(packets[-1]["file_name"], "atc_pickdrop_1.ngc")
+        self.assertNotIn("rack_change.ngc", {p["file_name"] for p in packets})
+
+    def test_agent_stopped_mid_run_is_unknown_not_an_abort(self):
+        _cfg, prog, run = self._program()
+        run = [(r[0], 99.0 if r[2] in ("task_mode", "interp_state") else r[1], r[2], r[3]) for r in run]
+        _, packets, journal = self.run_agent(run[:-1], stop_at=5.0, mes_enabled=True)  # still running at 5 s
+        self.assertEqual((packets[-1]["abort_count"], packets[-1]["parts_produced"]), (0, 0))
+        self.assertTrue(all(e["abort_count"] == 0 for e in journal))
+        (c,) = self._cycles()
+        self.assertEqual((c["payload"]["outcome"], c["payload"]["program_path"]), ("unknown", prog))
+
 if __name__ == "__main__":
     unittest.main()
