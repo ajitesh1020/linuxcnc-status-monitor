@@ -114,5 +114,35 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(ai.resolve_path("~/id.json", "/x"), os.path.expanduser("~/id.json"))
 
 
+class StaleTempTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+
+    def touch(self, name):
+        with open(os.path.join(self.dir, name), "w") as f:
+            f.write("{}")
+
+    def dead_pid(self):
+        pid = 4_000_000                       # above pid_max: never running
+        while ai._pid_alive(pid):
+            pid += 1
+        return pid
+
+    def test_removes_only_dead_temps_of_the_named_files(self):
+        dead, alive = self.dead_pid(), os.getppid()
+        names = ["mes_ack.json", "mes_ack.json.tmp-%d" % dead, "mes_ack.json.tmp-%d" % alive,
+                 "mes_ack.json.tmp-%d" % os.getpid(), "mes_ack.json.tmp-x", "other.json.tmp-%d" % dead,
+                 "millwright.db"]
+        for n in names:
+            self.touch(n)
+        n = ai.remove_stale_temps([os.path.join(self.dir, "mes_ack.json"), "", "/no/such/dir/x.json"])
+        self.assertEqual(n, 2)                # dead pid + our own (a leftover of this pid is stale too)
+        self.assertEqual(sorted(os.listdir(self.dir)),
+                         sorted(["mes_ack.json", "mes_ack.json.tmp-%d" % alive, "mes_ack.json.tmp-x",
+                                 "other.json.tmp-%d" % dead, "millwright.db"]))
+
+
 if __name__ == "__main__":
     unittest.main()
