@@ -440,6 +440,54 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual(packets[-1]["file_name"], "atc_pickdrop_1.ngc")
         self.assertNotIn("rack_change.ngc", {p["file_name"] for p in packets})
 
+    def _remap_run(self, stop):
+        """AXIS traces 27 Oct 14:48 / 15:00: axis.ngc loaded; MillWright opens the pick/drop program and starts
+        it at once, so the agent first sees the run inside rack_change.ngc (all three line numbers are its
+        lines). After the last M6 LinuxCNC is back in the program with read_line on its M30 while motion
+        still runs the remap's moves (98, 103, 110); the run goes idle at 110. `stop`: Stop pressed during
+        the last M6, so LinuxCNC is never back in the program."""
+        import uuid as u
+        prog, sub, run = self._pickdrop()
+        cfg_dir = os.path.dirname(prog)
+        other = os.path.join(cfg_dir, "axis.ngc")
+        with open(other, "w") as f:
+            f.write("G21\n" + "G1 X1 Y1 F100\n" * 150 + "M2\n")
+        os.makedirs(os.path.join(cfg_dir, "mw_data"))
+        eid = str(u.uuid4())
+        with open(os.path.join(cfg_dir, "mw_data", "current_execution.json"), "w") as f:
+            json.dump({"execution_id": eid, "started_at": real_time.strftime(
+                "%Y-%m-%dT%H:%M:%S.000Z", real_time.gmtime()), "program_path": prog, "run_file": prog,
+                "mode": "atc_check", "station_id": str(u.uuid4()), "operator_session_id": None}, f)
+        run = [r for r in run if r[2] not in ("file", "call_level", "motion_line")]
+        in_sub_until = 11.0 if stop else 9.0
+        run += [(0.0, 99.0, "file", other), (0.0, 99.0, "call_level", 0), (0.0, 99.0, "read_line", 0),
+                (4.0, in_sub_until, "file", sub), (4.0, in_sub_until, "call_level", 1),
+                (4.0, in_sub_until, "read_line", 100)]
+        run += [(4.0 + i * 0.5, 4.5 + i * 0.5, "motion_line", ln)
+                for i, ln in enumerate((92, 98, 103, 110, 73, 77, 82, 92, 98, 98))]
+        if not stop:
+            run += [(9.0, 11.0, "file", prog), (9.0, 11.0, "read_line", 7),       # 7 = its M30
+                    (9.0, 9.5, "motion_line", 98), (9.5, 10.0, "motion_line", 103), (10.0, 99.0, "motion_line", 110)]
+        else:
+            run += [(9.0, 99.0, "motion_line", 98)]
+        run += [(11.0, 12.0, "file", prog), (12.0, 99.0, "file", other)]       # idle; MillWright reopens axis.ngc
+        _, packets, _ = self.run_agent(run, stop_at=16.0, mes_enabled=True, mes_millwright_config=cfg_dir)
+        (c,) = self._cycles()
+        self.assertEqual(c["correlation"]["execution_id"], eid)
+        return prog, packets[-1], c
+
+    def test_program_opened_and_started_inside_the_remap(self):
+        prog, last, c = self._remap_run(stop=False)
+        self.assertEqual((last["parts_produced"], last["abort_count"], last["run_from_here_count"]), (1, 0, 0))
+        # matched by start time (the agent did not know its program), MillWright named the file
+        self.assertEqual((c["payload"]["program_path"], c["payload"]["outcome"], c["payload"]["correlation_method"]),
+                         (prog, "completed", "time_window"))
+
+    def test_stop_in_the_last_tool_change_is_an_abort(self):
+        prog, last, c = self._remap_run(stop=True)
+        self.assertEqual((last["parts_produced"], last["abort_count"]), (0, 1))
+        self.assertEqual((c["payload"]["program_path"], c["payload"]["outcome"]), (prog, "aborted"))
+
     def test_agent_stopped_mid_run_is_unknown_not_an_abort(self):
         _cfg, prog, run = self._program()
         run = [(r[0], 99.0 if r[2] in ("task_mode", "interp_state") else r[1], r[2], r[3]) for r in run]

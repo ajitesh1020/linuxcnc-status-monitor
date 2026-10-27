@@ -476,6 +476,7 @@ class _CycleStateMachine:
         self._tracker  = CycleLineTracker()
         self._state    = self.IDLE
         self._in_sub   = False
+        self._read_line = 0
         # Line numbers last seen while idle — stale values to ignore at start.
         self._idle_motion_line  = 0
         self._idle_current_line = 0
@@ -493,7 +494,7 @@ class _CycleStateMachine:
             self._tracker.hold(motion_line, current_line)
             return
         prog = self._scanner.info
-        self._tracker.sample(motion_line, current_line, prog)
+        self._tracker.sample(motion_line, current_line, prog, self._read_line)
         rfh = self._tracker.is_run_from_here(prog)
         if rfh is not None:
             self._calc.classify_start(rfh)   # no-op after the first call
@@ -501,6 +502,7 @@ class _CycleStateMachine:
 
     def update(self, stat: linuxcnc.stat, in_subroutine: bool = False) -> str:
         self._in_sub = in_subroutine
+        self._read_line = int(_safe_get(stat, "read_line", 0) or 0)
         is_running   = _is_program_running(stat)
         is_paused    = _is_program_paused(stat)
         is_idle      = not is_running and not is_paused
@@ -901,6 +903,7 @@ def main() -> None:
     state_machine = _CycleStateMachine(calculator, scanner)
     program_file  = ProgramFile()        # subroutine folders set from the INI once connected
     program_ini   = None
+    cycle_program = ""                   # program of the running cycle (status loop)
     site_key      = key_bytes(cfg["site_key"])
     if site_key is not None and cfg_path and readable_by_others(cfg_path):
         logger.warning("%s holds the site key but other users can read it: "
@@ -1124,7 +1127,7 @@ def main() -> None:
                 if previous_cycle_state == "IDLE" and current_cycle_state == "RUNNING":
                     snap = calculator.snapshot()
                     mes_counts = (snap.parts_produced, snap.abort_count)
-                    mes_link.start(file_path)
+                    mes_link.start(file_path, uncertain=in_subroutine)
                 elif previous_cycle_state in ("RUNNING", "PAUSED") and current_cycle_state == "IDLE":
                     snap = calculator.snapshot()
                     mes_link.end("completed" if snap.parts_produced > mes_counts[0] else
@@ -1133,6 +1136,18 @@ def main() -> None:
                     mes_link.poll()
             except Exception as exc:
                 logger.error("MES cycle link: %s", exc)
+        # A run that starts inside a subroutine (a program whose first line is
+        # M6, opened and started at once) begins with the file loaded before;
+        # the program shows once LinuxCNC is back in it.
+        if current_cycle_state in ("RUNNING", "PAUSED"):
+            if previous_cycle_state not in ("RUNNING", "PAUSED"):
+                cycle_program = file_path
+            elif file_path and file_path != cycle_program and not in_subroutine:
+                logger.info("Cycle program is %s (started inside a subroutine).", file_path)
+                cycle_program = file_path
+                calculator.set_program(file_path)
+                if mes_link:
+                    mes_link.set_program(file_path)
 
         # ------------------------------------------------------------------
         # Everything below runs at the packet cadence, or at once when the

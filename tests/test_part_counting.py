@@ -242,6 +242,44 @@ class SubroutineTests(unittest.TestCase):
         self.assertEqual(pf.update(sub, 0, True), (sub, False))
         self.assertEqual(ProgramFile().update(sub, 0, True), (sub, False))  # no INI folders known
 
+    def test_lines_without_a_move_are_not_motion_lines(self):
+        prog = ProgramInfo.from_lines(["G21", "M6 T1", "G4 P2", "G53 G0 Z50", "M30", "G0 X1"])
+        self.assertEqual([n for n in range(0, 9) if prog.is_move_line(n)], [4, 6])
+        self.assertTrue(ProgramInfo().is_move_line(98))                     # not scanned: no check
+        t = CycleLineTracker()
+        t.begin(0, 0)
+        for line in (98, 103, 110):                                         # the remap's last moves
+            t.sample(line, 4, prog)
+        self.assertIsNone(t.start_line)
+        self.assertFalse(t.reached_end(prog))                               # 110 is not past the tail
+        t.sample(4, 5, prog)
+        self.assertEqual((t.start_line, t.is_run_from_here(prog)), (4, False))
+
+    def test_run_ending_in_a_remap_is_judged_by_read_line(self):
+        # trace 15:00: 28-line pick/drop check, M30 on line 27, the run goes idle at the remap's line 110
+        lines = ["(c)", "(c)", "", "G21 G90 G94", "", "(pass)"] + ["M6 T1 G43 H1", "G4 P2"] * 9 \
+            + ["", "G53 G0 Z76", "M30"]
+        prog = ProgramInfo.from_lines(lines)
+        self.assertEqual((prog.tail_line, prog.end_line), (26, 27))
+        for stop in (False, True):
+            t = CycleLineTracker()
+            t.begin(0, 110)
+            for ln in (92, 98, 103, 110, 73, 77, 82, 92, 98):
+                t.hold(ln, ln)
+            if not stop:
+                for ln in (98, 103, 110):
+                    t.sample(ln, ln, prog, read_line=27)
+            self.assertEqual(t.reached_end(prog), not stop)
+            self.assertIsNone(t.start_line)
+
+    def test_read_ahead_without_a_remap_does_not_count(self):
+        prog = ProgramInfo.from_lines(PROGRAM)
+        t = CycleLineTracker()
+        t.begin(0, 0)
+        for ln in (6, 50, 70):
+            t.sample(ln, ln, prog, read_line=108)        # read-ahead already at M30
+        self.assertFalse(t.reached_end(prog))             # stopped at line 70 of 106
+
     def test_tracker_ignores_lines_inside_a_subroutine(self):
         prog = ProgramInfo.from_lines(["G21", "M6 T1", "G4 P2", "G53 G0 Z50", "M30"])
         t = CycleLineTracker()
