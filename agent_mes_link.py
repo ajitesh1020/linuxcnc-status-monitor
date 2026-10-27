@@ -96,8 +96,9 @@ def read_current(mw_data: str) -> Optional[Dict[str, Any]]:
     return doc if isinstance(doc, dict) else None
 
 
-def match(doc: Optional[Dict[str, Any]], file: str, agent_start: float) -> bool:
-    """Is `doc` the run the agent saw start at `agent_start` (wall time)?"""
+def match(doc: Optional[Dict[str, Any]], file: str, agent_start: float, any_file: bool = False) -> bool:
+    """Is `doc` the run the agent saw start at `agent_start` (wall time)? `any_file`: the agent does not
+    know its program (the run started inside a subroutine), so only the start time is compared."""
     if not doc or doc.get("ended_at"):
         return False
     eid, sid = doc.get("execution_id"), doc.get("operator_session_id")
@@ -111,6 +112,8 @@ def match(doc: Optional[Dict[str, Any]], file: str, agent_start: float) -> bool:
     delta = started.replace(tzinfo=timezone.utc).timestamp() - agent_start
     if not -MATCH_BEFORE_S <= delta <= MATCH_AFTER_S:
         return False
+    if any_file:
+        return True
     return _same_file(doc.get("program_path"), file) or _same_file(doc.get("run_file"), file)
 
 
@@ -123,10 +126,13 @@ class CycleLink:
         self.cycle: Optional[Dict[str, Any]] = None
         self.dropped = 0
 
-    def start(self, file: str) -> None:
+    def start(self, file: str, uncertain: bool = False) -> None:
+        """`uncertain`: the run started inside a subroutine (an M6 remap), so `file` is only the file
+        loaded before; LinuxCNC may have opened and started another one at once (MillWright does)."""
         now = self.wall()
         self.cycle = {"started": now, "program_path": file or None, "execution_id": str(uuid.uuid4()),
-                      "method": "none", "operator_session_id": None, "next_try": now + RETRY_EVERY_S}
+                      "method": "none", "operator_session_id": None, "next_try": now + RETRY_EVERY_S,
+                      "uncertain": bool(uncertain)}
         self._try()
 
     def _try(self) -> None:
@@ -135,6 +141,11 @@ class CycleLink:
         if match(doc, c["program_path"], c["started"]):
             c.update(execution_id=doc["execution_id"], method="explicit",
                      operator_session_id=doc.get("operator_session_id"))
+        elif c["uncertain"] and match(doc, c["program_path"], c["started"], any_file=True):
+            # Matched by start time only; MillWright knows which file it started.
+            c.update(execution_id=doc["execution_id"], method="time_window",
+                     operator_session_id=doc.get("operator_session_id"),
+                     program_path=doc.get("run_file") or doc.get("program_path") or c["program_path"])
 
     def poll(self) -> None:
         """Every sample: re-read during the first seconds while not matched."""
@@ -150,10 +161,10 @@ class CycleLink:
         """The cycle's program turned out to be another file (the run started
         inside a subroutine): record it and look for MillWright's run again."""
         c = self.cycle
-        if c is None or not file or file == c["program_path"]:
+        if c is None or not file or _same_file(file, c["program_path"]):
             return
-        c["program_path"] = file
-        if c["method"] == "none" and self.mw_data:
+        c["program_path"], c["uncertain"] = file, False
+        if c["method"] != "explicit" and self.mw_data:
             self._try()
 
     def end(self, outcome: str) -> None:

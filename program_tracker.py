@@ -297,6 +297,9 @@ class ProgramFile:
         return self.program, sub and file != self.program
 
 
+SUB_LINES_MAX = 5000
+
+
 class CycleLineTracker:
     """Per-cycle line bookkeeping. Call begin() at cycle start with the line
     numbers seen while idle, then sample() every tick."""
@@ -313,18 +316,44 @@ class CycleLineTracker:
         self.last_motion_line: Optional[int] = None
         self.max_line        = 0
         self.end_seen        = False
+        # Subroutine files (an M6 remap): their line numbers, whether the last
+        # motion line seen was theirs, and whether the interpreter read the
+        # program's M2/M30 (read_line, in the program file).
+        self._sub_lines: set = set()
+        self.from_sub        = False
+        self.read_end        = False
 
     def hold(self, motion_line: int, current_line: int) -> None:
         """A sample taken inside a subroutine: its line numbers are not the
         program's. They count as stale until they change in the program."""
-        self._stale_motion, self._motion_live = int(motion_line or 0), False
-        self._stale_current, self._current_live = int(current_line or 0), False
+        motion_line, current_line = int(motion_line or 0), int(current_line or 0)
+        self._stale_motion, self._motion_live = motion_line, False
+        self._stale_current, self._current_live = current_line, False
+        for ln in (motion_line, current_line):
+            if ln > 0 and len(self._sub_lines) < SUB_LINES_MAX:
+                self._sub_lines.add(ln)
+        if motion_line > 0:
+            self.from_sub = True
 
-    def sample(self, motion_line: int, current_line: int, prog: ProgramInfo) -> None:
+    def _subs_line(self, line: int, prog: ProgramInfo) -> bool:
+        """Back in the program: is `line` still a subroutine's? (Its last moves
+        run after LinuxCNC is back, with its line numbers.) Only once one ran."""
+        return bool(self._sub_lines) and (line in self._sub_lines or not prog.is_move_line(line))
+
+    def sample(self, motion_line: int, current_line: int, prog: ProgramInfo,
+               read_line: int = 0) -> None:
         motion_line  = int(motion_line or 0)
         current_line = int(current_line or 0)
-        if motion_line > 0 and not prog.is_move_line(motion_line):
-            motion_line = 0            # not a move of this program (a subroutine's)
+        if prog.end_line > 0 and int(read_line or 0) >= prog.end_line:
+            self.read_end = True       # read M2/M30 (no read-ahead past a remap)
+        if motion_line > 0 and motion_line != self._stale_motion and self._subs_line(motion_line, prog):
+            self.from_sub, motion_line = True, 0
+        elif motion_line > 0 and not prog.is_move_line(motion_line):
+            motion_line = 0            # not a move of this program
+        elif motion_line > 0 and motion_line != self._stale_motion:
+            self.from_sub = False
+        if current_line > 0 and current_line in self._sub_lines:
+            current_line = 0           # a subroutine's line, not the program's
         if not self._motion_live and motion_line > 0 and motion_line != self._stale_motion:
             self._motion_live = True
         if self._motion_live and motion_line > 0:
@@ -356,6 +385,10 @@ class CycleLineTracker:
         """Evaluate once the cycle has gone idle."""
         if self.end_seen:
             return True
+        if self.from_sub:
+            # The run ended in a subroutine (the last M6 of an ATC check): the
+            # program's own lines say nothing; it finished if M2/M30 was read.
+            return self.read_end
         if prog.end_line <= 0:
             return False
         if prog.tail_line <= 0:

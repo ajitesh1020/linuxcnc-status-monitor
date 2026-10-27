@@ -169,7 +169,14 @@ All in `<LinuxCNC config dir>/mw_data/` (the agent finds it through config key
   treats a run as the same one when `program_path` or `run_file` is the file
   LinuxCNC runs and `started_at` is at most 3 s before (or, for poll jitter, up
   to 1 s after) the agent's own cycle start (plan P1.6); otherwise it makes its
-  own `execution_id` and `correlation_method: "none"`.
+  own `execution_id` and `correlation_method: "none"`. When the agent's first
+  running sample is already inside a subroutine (an M6 remap; MillWright opens
+  and starts a generated file at once, so LinuxCNC shows it for ~30 ms only),
+  the agent does not know its program: it matches on the time window alone,
+  takes `run_file` as the program and sends `correlation_method:
+  "time_window"` (27 Oct 2026). MillWright knows the file from
+  `mw_data/run_request.json`, which its program panel writes just before it
+  starts a file.
 - `millwright.db` table `mw_outbox` exactly as plan P1.4 (`seq`, `event_id`,
   `type`, `occurred_at`, `body` = the encoded envelope, `audit_id`), with
   `state` rows `station_id` and `outbox_epoch`. MillWright's envelopes:

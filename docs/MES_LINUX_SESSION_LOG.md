@@ -277,6 +277,33 @@ within seconds of starting (queue 38 → 42).
   3. The .deb install restarted the agent during the run (postinst, then the user's restart): the stop counted
      an abort and wrote no MES record. **Fixed** in the same agent branch (user's choice: unknown): nothing
      counted, `cycle.observed` `outcome: unknown`.
-  To do: install both, run the pick/drop check again, check `atc_check`, no job, agent `explicit`.
+  Agent #37 and millwright #7 merged; MillWright reinstalled in `test_config` and .deb installed by the user.
+- **Pick/drop check again (27 Oct 14:30-14:33)**, `atc_pickdrop_143012.ngc` (28 lines, first move line 26):
+  - MillWright: `execution.started` mode **`atc_check`**, no job counted (`job_events` unchanged).
+  - Agent: `axis.ngc` was loaded; MillWright opened the program and started it at once, so the agent first
+    saw the run inside `rack_change.ngc` and kept `axis.ngc` (`cycle.observed`: `axis.ngc`, `none`). After
+    the last M6 LinuxCNC was back in the program while motion ran the remap's last moves (`motion_line` 98,
+    103, 110): Run From Here at 100 %.
+- **Status traces (27 Oct, read-only script, 50-100 samples/s; user ran the check 3 times):**
+  - 14:48 and 14:52 (both completed): MillWright `normal` + **aborted** both times (its first poll, every
+    200 ms, saw `rack_change.ngc`; the 14:30 `atc_check` was luck). Agent: completed, but `none` /
+    `axis.ngc`.
+  - The program file shows for **~30 ms** at the start (then `call_level` 1, `rack_change.ngc`); inside the
+    remap `motion_line`, `current_line` **and** `read_line` count its lines; after the last M6 LinuxCNC is
+    back in the program with **`read_line` 27 = its M30** while motion runs the remap's 98 / 103 / 110; idle
+    at 110. Line 26 (`G53 G0 Z76`, already at Z76) never shows.
+  - No trace of a Stop yet: the rule for it below is inferred (a remap stops read-ahead).
+- **Fixes (all four agreed with the user):**
+  1. MillWright: the program panel writes `mw_data/run_request.json` just before it starts a file; the
+     machine tracker takes it (once, ≤ 15 s old) when its first running poll is inside a macro.
+  2. MillWright `run_end`: macro lines are not program lines (also after LinuxCNC is back); a run whose last
+     motion line is a macro's completed only if `read_line` reached M2/M30 in the program file. Programs
+     without a macro keep the old rule. `last_line` / resume line only program lines; job count and run time
+     use the file that ran. Branch `fix/remap-run-start-end` (accc467), 531 tests.
+  3. Agent: the same end rule (`CycleLineTracker`: remap lines, `read_end`).
+  4. Agent: a run that starts inside a subroutine is matched to MillWright's by start time only
+     (`time_window`) and takes its `run_file`. Branch `fix/remap-start-and-lines`, 248 tests.
+  To do: install both, run the check once to the end and once with **Stop** during T9; expect `atc_check`,
+  completed / aborted on both sides, agent `time_window`.
 - The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
   spool. Start it again to drain them, or wait for the two-PC test.

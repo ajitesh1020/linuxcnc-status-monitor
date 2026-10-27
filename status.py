@@ -476,6 +476,7 @@ class _CycleStateMachine:
         self._tracker  = CycleLineTracker()
         self._state    = self.IDLE
         self._in_sub   = False
+        self._read_line = 0
         # Line numbers last seen while idle — stale values to ignore at start.
         self._idle_motion_line  = 0
         self._idle_current_line = 0
@@ -493,7 +494,7 @@ class _CycleStateMachine:
             self._tracker.hold(motion_line, current_line)
             return
         prog = self._scanner.info
-        self._tracker.sample(motion_line, current_line, prog)
+        self._tracker.sample(motion_line, current_line, prog, self._read_line)
         rfh = self._tracker.is_run_from_here(prog)
         if rfh is not None:
             self._calc.classify_start(rfh)   # no-op after the first call
@@ -501,6 +502,7 @@ class _CycleStateMachine:
 
     def update(self, stat: linuxcnc.stat, in_subroutine: bool = False) -> str:
         self._in_sub = in_subroutine
+        self._read_line = int(_safe_get(stat, "read_line", 0) or 0)
         is_running   = _is_program_running(stat)
         is_paused    = _is_program_paused(stat)
         is_idle      = not is_running and not is_paused
@@ -1125,7 +1127,7 @@ def main() -> None:
                 if previous_cycle_state == "IDLE" and current_cycle_state == "RUNNING":
                     snap = calculator.snapshot()
                     mes_counts = (snap.parts_produced, snap.abort_count)
-                    mes_link.start(file_path)
+                    mes_link.start(file_path, uncertain=in_subroutine)
                 elif previous_cycle_state in ("RUNNING", "PAUSED") and current_cycle_state == "IDLE":
                     snap = calculator.snapshot()
                     mes_link.end("completed" if snap.parts_produced > mes_counts[0] else
