@@ -24,7 +24,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   for ~30 ms and the agent (sampling every 100 ms) first sees the run inside
   `rack_change.ngc`, with the file loaded before (`axis.ngc`) as its program.
   - Such a run is matched to MillWright's by start time alone
-    (`correlation_method: "time_window"`) and takes MillWright's `run_file`;
+    (`correlation_method: "time_window"`) and takes MillWright's `run_file`,
+    also as the program in packets and the journal (the 15:24 run showed
+    `axis.ngc` on the dashboard for its whole 3½ minutes);
     when LinuxCNC shows a program file during the run, the cycle, its part and
     its `cycle.observed` take that file.
   - The remap's line numbers are not the program's, also after LinuxCNC is back

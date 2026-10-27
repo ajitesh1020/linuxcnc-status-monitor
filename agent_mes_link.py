@@ -157,6 +157,11 @@ class CycleLink:
             c["next_try"] = now + RETRY_EVERY_S
             self._try()
 
+    def adopted_program(self) -> Optional[str]:
+        """The file MillWright says this run is, when the agent did not know it (time-window match)."""
+        c = self.cycle
+        return c["program_path"] if c is not None and c["method"] == "time_window" else None
+
     def set_program(self, file: str) -> None:
         """The cycle's program turned out to be another file (the run started
         inside a subroutine): record it and look for MillWright's run again."""

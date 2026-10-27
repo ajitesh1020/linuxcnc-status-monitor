@@ -474,6 +474,11 @@ class StatusLoopTests(unittest.TestCase):
         _, packets, _ = self.run_agent(run, stop_at=16.0, mes_enabled=True, mes_millwright_config=cfg_dir)
         (c,) = self._cycles()
         self.assertEqual(c["correlation"]["execution_id"], eid)
+        # 15:24 run: the dashboard showed axis.ngc for the whole run. Matched at the first sample, so
+        # every packet after it names the program.
+        running = [p["file_name"] for p in packets if p["cycle_state"] == "RUNNING"]
+        self.assertTrue(running)
+        self.assertEqual(set(running[1:]), {"atc_pickdrop_1.ngc"})
         return prog, packets[-1], c
 
     def test_program_opened_and_started_inside_the_remap(self):

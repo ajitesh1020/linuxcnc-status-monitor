@@ -1148,6 +1148,14 @@ def main() -> None:
                 calculator.set_program(file_path)
                 if mes_link:
                     mes_link.set_program(file_path)
+            adopted = mes_link.adopted_program() if mes_link else None
+            if adopted and adopted != cycle_program and os.path.isfile(adopted):
+                # Matched to MillWright's run by start time: its file is the program (packets, journal,
+                # the cycle); stat.file shows the remap until the last tool change.
+                logger.info("Cycle program is %s (MillWright's run, started inside a subroutine).", adopted)
+                cycle_program = program_file.program = adopted
+                calculator.set_program(adopted)
+                scanner.load(adopted)
 
         # ------------------------------------------------------------------
         # Everything below runs at the packet cadence, or at once when the

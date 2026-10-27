@@ -303,7 +303,19 @@ within seconds of starting (queue 38 → 42).
   3. Agent: the same end rule (`CycleLineTracker`: remap lines, `read_end`).
   4. Agent: a run that starts inside a subroutine is matched to MillWright's by start time only
      (`time_window`) and takes its `run_file`. Branch `fix/remap-start-and-lines`, 248 tests.
-  To do: install both, run the check once to the end and once with **Stop** during T9; expect `atc_check`,
-  completed / aborted on both sides, agent `time_window`.
+  Agent #38 and millwright #8 merged; both installed by the user.
+- **Pick/drop check with the fixes (27 Oct 15:19 and 15:24)**, both run to the end (the second was meant to
+  be stopped during T9 but ran to M30: T9 picked 15:27:58, idle 15:28:03 at line 110):
+
+  | Run | MillWright | Agent |
+  |---|---|---|
+  | 15:19 | `atc_check`, completed, `last_line` none, no job | completed, `explicit`, `atc_pickdrop_151944.ngc` |
+  | 15:24 | `atc_check`, completed, `last_line` **110**, no job | completed, `time_window`, `atc_pickdrop_152426.ngc` |
+
+  Two leftovers, fixed: (1) MillWright `last_line` 110 at 15:24: the first running poll still showed the
+  previous run's 110 before the first macro and it was never replaced (millwright `fix/run-line-stale`,
+  dd1aa5e, 531 tests). (2) Agent packets showed `axis.ngc` for the whole 15:24 run although the MES record
+  was right: a time-window match now also sets the program (agent `fix/time-window-program`, 248 tests).
+  Still to do: a run with **Stop** during T9 (the abort rule is not yet seen on the machine).
 - The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
   spool. Start it again to drain them, or wait for the two-PC test.
