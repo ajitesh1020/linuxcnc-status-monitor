@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 27 Oct 2026 (version 1.7.0, H impact runs passed, pick/drop Stop test passed).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 27 Oct 2026 (version 1.7.0, H impact runs passed, pick/drop Stop test passed, two-PC J test started).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -235,6 +235,42 @@ reset, from LinuxCNC start) had 995 924 / 272 608. Runs 2 and 4: `cycle.observed
 `execution_id` as MillWright. While the agent was stopped MillWright kept its events; the agent took them
 within seconds of starting (queue 38 → 42).
 
+## Two-PC J test (27 Oct, in progress)
+
+FloorWatch site service as a Windows service on the Windows PC: `https://192.168.0.105:8443`, site
+`cb6a4a6c-7625-4042-8f42-b4f28b7bb75d`, CA fingerprint `add2f98bb0fdbd9d…`, built from FloorWatch main 1db515f +
+`fix/service-acl`, contract 1.2. The user has the enrolment code (single use, 24 h from 27 Oct; not recorded
+here; ask for a fresh one if it has run out).
+
+Done:
+- **Waiting events drained first** (user's choice, rather than letting them be rejected): the queue held 92
+  events stamped with the loopback test site `7844c24c…`. `~/fw-service-test` started once (17:43, 127.0.0.1
+  only); queue 92 → 0 within ~2 min, spool 119 `acked`, no errors in its log. Then stopped and
+  `~/fw-service-test` removed. The agent shows `offline` until enrolled again (its service URL still points at
+  the removed loopback service); nothing waits to send.
+
+Blocked:
+- `curl -k https://192.168.0.105:8443/v1/health` times out (OFC_PC 192.168.0.120, same /24); ping times out,
+  TCP 8443 does not answer. Likely the Windows network profile (Public) or firewall. The user fixes it on
+  28 Oct (`Get-NetConnectionProfile` → Private; inbound rule TCP 8443 if missing; `floorwatch-service status`).
+
+Still to do, in order:
+1. Health returns site `cb6a4a6c…`.
+2. With the user's OK, in a terminal (the "y" prompt writes `mes_service_url`):
+   `lcnc-status-agent --mes-enroll https://192.168.0.105:8443 <code>`; restart the agent; `--check` shows
+   service, site and certificate expiry; `--mes-status` link `ok`.
+3. In AXIS: one normal run and one Pick/Drop Check; `floorwatch-service status` on Windows (Administrator)
+   before and after: event count goes up, agent enrolled.
+4. Outage: `floorwatch-service stop` on Windows during a run: link offline, queue grows; after
+   `floorwatch-service start` the queue drains to 0.
+
+Found, not fixed yet: **re-enrolling with a different site while the agent's own events wait loses them.**
+Waiting events carry the old `site_id`; the new service rejects them as `site_mismatch`, which is final.
+Proposed fix: `--mes-enroll` refuses when events are waiting and the new site differs, and prints the count
+and how to drain (start the old service) or override (`--discard-waiting`, which marks them dropped with a
+reason, not rejected). Re-stamping them with the new site is not proposed: they happened under the old
+site's enrolment, and changing their site would misattribute them. A warning alone is too easy to miss.
+
 ## Contract gaps found
 
 - (Gap, by design) The agent's `clock.boot_id` is its session id (contract README example), MillWright's is the
@@ -249,8 +285,8 @@ within seconds of starting (queue 38 → 42).
 
 1. **ATC pick/drop check run again** (Pick/Drop Check button in the program panel, not
    `nc_files/atc_tool_pick_drop_check.ngc`) after installing the two fixes below: check `atc_check`.
-2. **Two-PC J test:** the Windows PC's service address + a fresh code + OK to move the agent off
-   the loopback test service. Then stop `~/fw-service-test`'s service and remove it.
+2. **Two-PC J test:** fix the Windows PC's network profile / firewall (28 Oct), then OK to enrol;
+   see "Two-PC J test" above.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
 4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
@@ -335,5 +371,4 @@ within seconds of starting (queue 38 → 42).
   remap's line 110 through the dwell and the Z move, the same as a normal end, so the agent says completed.
   MillWright said aborted; why it differs is not known yet (no trace of that run). Needs a trace of a Stop in
   those last seconds before a fix is chosen.
-- The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
-  spool. Start it again to drain them, or wait for the two-PC test.
+- (Done 27 Oct) The loopback test service's waiting events drained; `~/fw-service-test` removed.
