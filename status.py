@@ -877,6 +877,18 @@ def main() -> None:
     # Stable identity (PROTOCOL.md §4.1b): the dashboard keys machines by it.
     machine_uuid  = agent_identity.load_or_create(
         agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR))
+    # Temp files of atomic writes cut off by a stop or power loss.
+    _mes_dir = agent_mes_forward.mes_dir(USER_CONFIG_DIR)
+    _mw_data = agent_mes_link.mw_data_dir(cfg["mes_millwright_config"])
+    agent_identity.remove_stale_temps([
+        agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR),
+        cfg_path or os.path.join(USER_CONFIG_DIR, "config.yaml"),
+        agent_mes_status.status_path(USER_CONFIG_DIR),
+        os.path.join(USER_CONFIG_DIR, "mes_spool.producer.json"),
+        *[os.path.join(_mes_dir, n) for n in (agent_mes_forward.KEY_FILE, agent_mes_forward.CERT_FILE,
+                                              agent_mes_forward.CA_FILE, agent_mes_forward.ENROLMENT_FILE)],
+        os.path.join(_mw_data, agent_mes_link.ACK_FILE) if _mw_data else "",
+    ])
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     scanner       = ProgramScanner()
     state_machine = _CycleStateMachine(calculator, scanner)

@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Leftover temp files are removed at start.** A stop or power loss in the
+  middle of an atomic write left `<file>.tmp-<pid>` behind (seen as
+  `mes_ack.json.tmp-*` in MillWright's `mw_data`). At start the agent now
+  removes those of its own files (identity, config, `mes_status.json`, spool
+  sidecar, enrolment files, `mes_ack.json`) unless that pid is still running.
+
 ## [1.7.0] - 2026-10-27
 
 ### Added

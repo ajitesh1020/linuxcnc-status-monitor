@@ -263,7 +263,13 @@ within seconds of starting (queue 38 → 42).
   Worktrees `~/fw-test/gate2/agent-src` and `fw-src` removed; logs kept in `~/fw-test/gate2/`.
 - (Done) Agent #30 (contract 1.2) and #32 (fleet gate docs) merged; the installed .deb has contract 1.2.
 - Link state label: `not_enrolled -> offline` is logged at start on an enrolled PC (initial label only).
-- Leftover `mes_ack.json.tmp-<pid>` files in MillWright's `mw_data` (26 Oct 16:13, 27 Oct 03:53) from writes cut
-  off by a stop; harmless, but the agent should remove its old temp files at start.
+- (Fixed in branch `fix/stale-temp-files`) Leftover `mes_ack.json.tmp-<pid>` files in MillWright's `mw_data`
+  (26 Oct 16:13, 27 Oct 03:53) from writes cut off by a stop: the agent now removes its own leftover temp files
+  at start (dead pid only).
+- **MillWright: pick/drop check probably logged as `normal`, not `atc_check`.** `mw_audit._program_of` gives
+  "pick/drop check" only when the file has the program-panel header *and* is named `atc_pickdrop*`, but
+  `generate_pickdrop_check` writes `(auto-generated tool pick/drop check …)`, without that header. The test
+  `test_atc_pick_drop_check_is_an_atc_check_execution` fakes the program-panel header, so it passes. Not yet
+  seen in AXIS; the pick/drop check run will show it.
 - The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
   spool. Start it again to drain them, or wait for the two-PC test.

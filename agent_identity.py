@@ -81,6 +81,46 @@ def _fsync_dir(directory: str) -> None:
         os.close(fd)
 
 
+def remove_stale_temps(paths) -> int:
+    """Remove `<file>.tmp-<pid>` files left by an atomic write that was cut off
+    (power loss, kill). The agent writes all its files that way. A file whose
+    pid is still running (an enrolment in progress, say) is left alone.
+    Returns how many were removed."""
+    removed = 0
+    for path in paths:
+        if not path:
+            continue
+        directory, prefix = os.path.split(os.path.abspath(path))
+        prefix += ".tmp-"
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            pid = name[len(prefix):]
+            if not name.startswith(prefix) or not pid.isdigit():
+                continue
+            if int(pid) != os.getpid() and _pid_alive(int(pid)):
+                continue
+            try:
+                os.unlink(os.path.join(directory, name))
+                removed += 1
+                logger.info("Removed leftover temp file %s", os.path.join(directory, name))
+            except OSError as exc:
+                logger.warning("Cannot remove leftover temp file %s: %s", name, exc)
+    return removed
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:              # EPERM: exists, someone else's
+        return True
+    return True
+
+
 def _write_new(path: str) -> str:
     """Write a new identity file atomically. If another process made one in the
     meantime, that one wins and is returned."""
