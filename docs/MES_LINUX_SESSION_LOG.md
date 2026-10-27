@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 26 Oct 2026 (P2.6 AXIS check, MillWright run-end fix checked in AXIS).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 27 Oct 2026 (version 1.7.0, H impact runs passed).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -17,7 +17,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | E | MillWright run context | `feat/mes-run-context` → `main` | millwright #2 | **Merged** 26 Oct (base changed to `main` after #1; 488 tests pass on the combined branch); AXIS check **passed** 26 Oct |
 | F | Agent MES spool | `feat/mes-spool` | agent #22 | **Merged** 22 Oct |
 | G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check **passed** 26 Oct |
-| H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs pending |
+| H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct (see below) |
 
@@ -201,7 +201,44 @@ three runs (same `execution_id`, explicit):
 The LX052 stop line was kept until the Job-tab run completed the program and cleared it. Job counter not
 checked: `test_config` has no `[MW_JOBS]` section (no counts since 16 Oct); it uses the same `run_end` check.
 
+## Version 1.7.0 (27 Oct)
+
+Agent #34 (merged, 759ac21): `AGENT_VERSION` 1.7.0 (user's choice), README, CHANGELOG `[1.7.0] - 2026-10-27`.
+.deb `linuxcnc-status-agent_1.7.0_all.deb` built from it and installed by the user (12:02); events now carry
+`version: 1.7.0`. Also merged: #33 (session log). ATC run of `LX052_drill_ATC.ngc` from the top (12:04-12:12,
+466.8 s, line 633 of 634): MillWright `execution.ended` and the agent's `cycle.observed` both `completed`,
+same `execution_id` (explicit), same operator session.
+
+## H impact runs (27 Oct)
+
+OFC_PC: Intel i3-4170 3.70 GHz, kernel 6.1.0-53-rt-amd64, LinuxCNC 2.9.10 (POSIX realtime), AXIS with
+MillWright panels, `test_config` (parport stepgen; base 25 µs, servo 990 µs).
+
+**Baseline** (LinuxCNC off, `latency-histogram --nox`, 10 min, agent running): base jitter max 39.9 µs, servo
+42.3 µs (21 Oct: 76.0 / 65.4 µs).
+
+**With LinuxCNC:** `LX052_drill_ATC.ngc` to the end each run; the user reset `servo-thread.tmax` and
+`base-thread.tmax` before each run; the session stopped / started the agent and read the values afterwards
+(CPU clocks; ≈ µs at 3.7 GHz):
+
+| Run | Agent | `servo-thread.tmax` | `base-thread.tmax` | Run time |
+|---|---|---|---|---|
+| 1 | stopped | 810 916 (≈ 219 µs) | 211 764 (≈ 57 µs) | 327.0 s |
+| 2 | running | 528 336 (≈ 143 µs) | 165 120 (≈ 45 µs) | 314.4 s |
+| 3 | stopped | 669 696 (≈ 181 µs) | 264 716 (≈ 72 µs) | 432.0 s |
+| 4 | running | 541 436 (≈ 146 µs) | 211 481 (≈ 57 µs) | 520.4 s |
+
+All four completed (line 633), no following errors (`joint.*.f-errored` never true), agent CPU 0.5 %. The two
+runs with the agent running have the lower servo maxima; the spread between runs is noise on this non-isolated
+PC. **Pass:** no sign the agent affects the machine. Extra point: the first ATC run (agent running, tmax not
+reset, from LinuxCNC start) had 995 924 / 272 608. Runs 2 and 4: `cycle.observed` explicit, same
+`execution_id` as MillWright. While the agent was stopped MillWright kept its events; the agent took them
+within seconds of starting (queue 38 → 42).
+
 ## Contract gaps found
+
+- (Gap, by design) The agent's `clock.boot_id` is its session id (contract README example), MillWright's is the
+  kernel boot id, so the service cannot order agent and MillWright events from one boot by `mono_ms`.
 
 - (Closed) ATC pick/drop check mode had no contract `mode` value: contract 1.2 `atc_check` (agent #30,
   millwright #5); installed in `test_config` 26 Oct, not yet seen in a pick/drop check run.
@@ -214,12 +251,11 @@ checked: `test_config` has no `[MW_JOBS]` section (no counts since 16 Oct); it u
    execution events (contract 1.2).
 2. **Two-PC J test:** the Windows PC's service address + a fresh code + OK to move the agent off
    the loopback test service. Then stop `~/fw-service-test`'s service and remove it.
-3. **H impact runs** (BENCH_TEST §6): latency test without LinuxCNC; then with a
-   real program, `servo-thread.tmax` with the agent stopped vs running (user resets
-   tmax with halcmd).
-4. **Package I:** say when the scanners are bought (plan §16 D1).
-5. **Agent version:** `AGENT_VERSION` in `status.py` is still 1.6.0 by the user's
-   choice; the CHANGELOG says 1.7.0.
+3. **Package I:** say when the scanners are bought (plan §16 D1).
+4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
+   `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
+   Pilot PCs need time sync.
+5. (Done 27 Oct) H impact runs; version 1.7.0.
 
 ## Pending — this session
 
@@ -227,3 +263,7 @@ checked: `test_config` has no `[MW_JOBS]` section (no counts since 16 Oct); it u
   Worktrees `~/fw-test/gate2/agent-src` and `fw-src` removed; logs kept in `~/fw-test/gate2/`.
 - (Done) Agent #30 (contract 1.2) and #32 (fleet gate docs) merged; the installed .deb has contract 1.2.
 - Link state label: `not_enrolled -> offline` is logged at start on an enrolled PC (initial label only).
+- Leftover `mes_ack.json.tmp-<pid>` files in MillWright's `mw_data` (26 Oct 16:13, 27 Oct 03:53) from writes cut
+  off by a stop; harmless, but the agent should remove its old temp files at start.
+- The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
+  spool. Start it again to drain them, or wait for the two-PC test.
