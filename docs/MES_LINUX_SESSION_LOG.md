@@ -247,8 +247,8 @@ within seconds of starting (queue 38 → 42).
 
 ## Pending — needs the user
 
-1. **ATC pick/drop check run** (`atc_tool_pick_drop_check.ngc`) in AXIS: check it gets `atc_check`
-   execution events (contract 1.2).
+1. **ATC pick/drop check run again** (Pick/Drop Check button in the program panel, not
+   `nc_files/atc_tool_pick_drop_check.ngc`) after installing the two fixes below: check `atc_check`.
 2. **Two-PC J test:** the Windows PC's service address + a fresh code + OK to move the agent off
    the loopback test service. Then stop `~/fw-service-test`'s service and remove it.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
@@ -263,13 +263,20 @@ within seconds of starting (queue 38 → 42).
   Worktrees `~/fw-test/gate2/agent-src` and `fw-src` removed; logs kept in `~/fw-test/gate2/`.
 - (Done) Agent #30 (contract 1.2) and #32 (fleet gate docs) merged; the installed .deb has contract 1.2.
 - Link state label: `not_enrolled -> offline` is logged at start on an enrolled PC (initial label only).
-- (Fixed in branch `fix/stale-temp-files`) Leftover `mes_ack.json.tmp-<pid>` files in MillWright's `mw_data`
-  (26 Oct 16:13, 27 Oct 03:53) from writes cut off by a stop: the agent now removes its own leftover temp files
-  at start (dead pid only).
-- **MillWright: pick/drop check probably logged as `normal`, not `atc_check`.** `mw_audit._program_of` gives
-  "pick/drop check" only when the file has the program-panel header *and* is named `atc_pickdrop*`, but
-  `generate_pickdrop_check` writes `(auto-generated tool pick/drop check …)`, without that header. The test
-  `test_atc_pick_drop_check_is_an_atc_check_execution` fakes the program-panel header, so it passes. Not yet
-  seen in AXIS; the pick/drop check run will show it.
+- (Done, agent #36; checked 27 Oct 13:33: both `mes_ack.json.tmp-*` removed) Leftover temp files of cut-off
+  atomic writes are removed at start (dead pid only).
+- **Pick/drop check in AXIS (27 Oct 13:31-13:34)**, MillWright program panel button, Repeat 1,
+  `atc_pickdrop_133115.ngc`, completed (line 110). Found:
+  1. MillWright logged `mode: normal` (not `atc_check`) and counted a job (`job_events` +1):
+     `_program_of` / `run_finished` did not know the generator's header `(auto-generated tool pick/drop check`;
+     the test faked the Job-tab header. **Fixed** in millwright `fix/pickdrop-atc-check` (f89a78f, 521 tests).
+  2. Agent tracked the run as `rack_change.ngc` (the M6 remap: `stat.file` names it, `motion_line` counts its
+     lines), as Run From Here, `cycle.observed` correlation `none`. **Fixed** in agent
+     `fix/subroutine-program-file`: files in `[RS274NGC] SUBROUTINE_PATH` / `USER_M_PATH` or at
+     `call_level` > 0 keep the program loaded before; their line numbers are ignored.
+  3. The .deb install restarted the agent during the run (postinst, then the user's restart): the stop counted
+     an abort and wrote no MES record. **Fixed** in the same agent branch (user's choice: unknown): nothing
+     counted, `cycle.observed` `outcome: unknown`.
+  To do: install both, run the pick/drop check again, check `atc_check`, no job, agent `explicit`.
 - The loopback test service (`~/fw-service-test`) stopped with the 26 Oct session; 42 events wait in the
   spool. Start it again to drain them, or wait for the two-PC test.
