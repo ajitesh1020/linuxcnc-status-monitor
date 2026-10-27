@@ -8,6 +8,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **A subroutine is not the program.** While LinuxCNC runs a remapped code or
+  an O-call from another file (an M6 tool change such as MillWright's
+  `rack_change.ngc`), `stat.file` names that file and the line numbers count
+  its lines. The agent took it as the program: a MillWright pick/drop check
+  (first line `M6 T1`) was tracked as `rack_change.ngc`, as Run From Here, and
+  its `cycle.observed` did not match MillWright's run. Now files in the INI's
+  `[RS274NGC] SUBROUTINE_PATH` / `USER_M_PATH`, or seen at `call_level` > 0,
+  keep the program loaded before; their line numbers are ignored. Applies to
+  cycle tracking, `file_name` in packets and the journal, the G-code sent to
+  the dashboard and `cycle.observed`.
+- **Agent stopped during a run: outcome unknown, not an abort.** A stop or
+  restart of the agent (e.g. a package upgrade) while a program runs counted
+  an abort and wrote no MES record. Now nothing is counted and a
+  `cycle.observed` with `outcome: "unknown"` is stored.
 - **Leftover temp files are removed at start.** A stop or power loss in the
   middle of an atomic write left `<file>.tmp-<pid>` behind (seen as
   `mes_ack.json.tmp-*` in MillWright's `mw_data`). At start the agent now

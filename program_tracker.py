@@ -37,7 +37,7 @@ import logging
 import os
 import re
 import threading
-from typing import Optional
+from typing import Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +205,83 @@ class ProgramScanner:
                            os.path.basename(file_path))
 
 
+# ---------------------------------------------------------------------------
+# Which file is the program
+# ---------------------------------------------------------------------------
+# While LinuxCNC runs an O-call subroutine or a remapped code (an M6 remap such
+# as rack_change.ngc), stat.file names that subroutine file and motion_line /
+# current_line count lines in it. Neither is the program the operator loaded.
+def subroutine_dirs(ini_path: str) -> List[str]:
+    """[RS274NGC] SUBROUTINE_PATH and USER_M_PATH of the INI (':'-separated,
+    relative to the INI's folder), as real paths. [] when unreadable."""
+    try:
+        with open(ini_path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except (OSError, TypeError):
+        return []
+    base = os.path.dirname(os.path.abspath(ini_path))
+    section, dirs = "", []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line[0] in "#;":
+            continue
+        if line.startswith("[") and "]" in line:
+            section = line[1:line.index("]")].strip().upper()
+            continue
+        if section != "RS274NGC" or "=" not in line:
+            continue
+        key, value = (x.strip() for x in line.split("=", 1))
+        if key.upper() not in ("SUBROUTINE_PATH", "USER_M_PATH"):
+            continue
+        for d in value.split(":"):
+            d = d.strip()
+            if d:
+                d = os.path.realpath(os.path.join(base, os.path.expanduser(d)))
+                if d not in dirs:
+                    dirs.append(d)
+    return dirs
+
+
+class ProgramFile:
+    """The loaded program, through subroutine calls.
+
+    update() every sample with stat.file, stat.call_level and whether a run is
+    in progress. Returns (program, in_subroutine):
+      * a file outside the subroutine folders at call level 0 is the program;
+      * a subroutine file (or call level > 0) keeps the program seen before;
+        line numbers are then not the program's (in_subroutine is True);
+      * a file in a subroutine folder opened on its own while idle, with no
+        program known yet, is taken as the program;
+      * an agent started in the middle of a subroutine knows no program ("")
+        until LinuxCNC is back in the program file.
+    """
+
+    def __init__(self, sub_dirs: Iterable[str] = ()) -> None:
+        self.set_dirs(sub_dirs)
+        self.program = ""
+
+    def set_dirs(self, sub_dirs: Iterable[str]) -> None:
+        self._dirs = tuple(os.path.realpath(d) + os.sep for d in sub_dirs if d)
+
+    def reset(self) -> None:
+        self.program = ""
+
+    def is_subroutine_file(self, path: str) -> bool:
+        return bool(path) and os.path.realpath(path).startswith(self._dirs) if self._dirs else False
+
+    def update(self, file: str, call_level: int, busy: bool) -> Tuple[str, bool]:
+        file = file or ""
+        sub = (call_level or 0) > 0 or self.is_subroutine_file(file)
+        if not file:
+            if not busy:
+                self.program = ""
+        elif not sub or file == self.program:
+            self.program = file
+        elif not busy and not self.program:
+            self.program = file              # a macro opened directly
+        return self.program, sub and file != self.program
+
+
 class CycleLineTracker:
     """Per-cycle line bookkeeping. Call begin() at cycle start with the line
     numbers seen while idle, then sample() every tick."""
@@ -221,6 +298,12 @@ class CycleLineTracker:
         self.last_motion_line: Optional[int] = None
         self.max_line        = 0
         self.end_seen        = False
+
+    def hold(self, motion_line: int, current_line: int) -> None:
+        """A sample taken inside a subroutine: its line numbers are not the
+        program's. They count as stale until they change in the program."""
+        self._stale_motion, self._motion_live = int(motion_line or 0), False
+        self._stale_current, self._current_live = int(current_line or 0), False
 
     def sample(self, motion_line: int, current_line: int, prog: ProgramInfo) -> None:
         motion_line  = int(motion_line or 0)

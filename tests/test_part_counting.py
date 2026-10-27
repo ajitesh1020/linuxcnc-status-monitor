@@ -8,7 +8,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cycle_time_calculator import CycleTimeCalculator  # noqa: E402
-from program_tracker import CycleLineTracker, ProgramInfo  # noqa: E402
+import tempfile  # noqa: E402
+from program_tracker import CycleLineTracker, ProgramFile, ProgramInfo, subroutine_dirs  # noqa: E402
 
 # 1 %            6 G0 X10 Y10 ... moves on 6..105
 # 2 (header)     106 G0 Z10     (tail move)
@@ -201,6 +202,58 @@ class PartCountingScenarioTests(unittest.TestCase):
         self.assertEqual(snap.last_completed_ms, 65_000)
         self.assertEqual(snap.partial_parts, 0)
 
+
+class SubroutineTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.d = os.path.realpath(self._tmp.name)
+
+    def test_subroutine_dirs_from_ini(self):
+        ini = os.path.join(self.d, "m.ini")
+        with open(ini, "w") as f:
+            f.write("[DISPLAY]\nSUBROUTINE_PATH = nope\n[RS274NGC]\n# c\n"
+                    "SUBROUTINE_PATH = mw_macros:/abs/subs : \nUSER_M_PATH = mw_macros\n[EMC]\n")
+        self.assertEqual(subroutine_dirs(ini), [os.path.join(self.d, "mw_macros"), "/abs/subs"])
+        self.assertEqual(subroutine_dirs(os.path.join(self.d, "missing.ini")), [])
+        self.assertEqual(subroutine_dirs(""), [])
+
+    def test_program_file_keeps_the_program_through_subroutines(self):
+        sub_dir = os.path.join(self.d, "macros")
+        prog, sub = os.path.join(self.d, "p.ngc"), os.path.join(sub_dir, "rack_change.ngc")
+        pf = ProgramFile([sub_dir])
+        self.assertEqual(pf.update(prog, 0, False), (prog, False))
+        self.assertEqual(pf.update(sub, 1, True), (prog, True))           # M6 remap
+        self.assertEqual(pf.update(sub, 0, True), (prog, True))           # folder alone is enough
+        self.assertEqual(pf.update(prog, 1, True), (prog, False))         # O-call in the same file: its lines
+        self.assertEqual(pf.update(prog, 0, True), (prog, False))
+        self.assertEqual(pf.update(sub, 0, False), (prog, True))          # idle, left in the sub
+        other = os.path.join(self.d, "q.ngc")
+        self.assertEqual(pf.update(other, 0, False), (other, False))      # a new program loaded
+        self.assertEqual(pf.update("", 0, True), (other, False))
+        self.assertEqual(pf.update("", 0, False), ("", False))
+
+    def test_program_file_without_a_known_program(self):
+        sub_dir = os.path.join(self.d, "macros")
+        sub = os.path.join(sub_dir, "warmup.ngc")
+        self.assertEqual(ProgramFile([sub_dir]).update(sub, 1, True), ("", True))   # agent started mid-call
+        pf = ProgramFile([sub_dir])
+        self.assertEqual(pf.update(sub, 0, False), (sub, False))         # a macro opened on its own
+        self.assertEqual(pf.update(sub, 0, True), (sub, False))
+        self.assertEqual(ProgramFile().update(sub, 0, True), (sub, False))  # no INI folders known
+
+    def test_tracker_ignores_lines_inside_a_subroutine(self):
+        prog = ProgramInfo.from_lines(["G21", "M6 T1", "G4 P2", "G53 G0 Z50", "M30"])
+        t = CycleLineTracker()
+        t.begin(0, 0)
+        for line in (90, 91, 92):
+            t.hold(line, line)
+        t.sample(92, 92, prog)                                            # stale sub line, back in the program
+        self.assertIsNone(t.start_line)
+        t.sample(4, 4, prog)
+        self.assertEqual(t.start_line, 4)
+        self.assertFalse(t.is_run_from_here(prog))
+        self.assertTrue(t.reached_end(prog))
 
 if __name__ == "__main__":
     unittest.main()

@@ -133,7 +133,7 @@ from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
                            single_instance)
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
-from program_tracker import CycleLineTracker, ProgramScanner
+from program_tracker import CycleLineTracker, ProgramFile, ProgramScanner, subroutine_dirs
 
 AGENT_VERSION: str = "1.7.0"
 
@@ -475,6 +475,7 @@ class _CycleStateMachine:
         self._scanner  = scanner
         self._tracker  = CycleLineTracker()
         self._state    = self.IDLE
+        self._in_sub   = False
         # Line numbers last seen while idle — stale values to ignore at start.
         self._idle_motion_line  = 0
         self._idle_current_line = 0
@@ -486,6 +487,11 @@ class _CycleStateMachine:
         self._idle_current_line = 0
 
     def _track(self, motion_line: int, current_line: int) -> None:
+        if self._in_sub:
+            # Inside a subroutine / remap (e.g. the M6 tool change): the line
+            # numbers count lines of that file, not of the program.
+            self._tracker.hold(motion_line, current_line)
+            return
         prog = self._scanner.info
         self._tracker.sample(motion_line, current_line, prog)
         rfh = self._tracker.is_run_from_here(prog)
@@ -493,7 +499,8 @@ class _CycleStateMachine:
             self._calc.classify_start(rfh)   # no-op after the first call
             self._calc.set_progress(self._tracker.progress(prog))
 
-    def update(self, stat: linuxcnc.stat) -> str:
+    def update(self, stat: linuxcnc.stat, in_subroutine: bool = False) -> str:
+        self._in_sub = in_subroutine
         is_running   = _is_program_running(stat)
         is_paused    = _is_program_paused(stat)
         is_idle      = not is_running and not is_paused
@@ -640,8 +647,8 @@ def _collect_spindle_data(stat: linuxcnc.stat) -> List[Dict[str, Any]]:
     return spindles
 
 
-def _collect_file_meta(stat: linuxcnc.stat) -> Dict[str, Any]:
-    file_path = _safe_get(stat, "file", "") or ""
+def _collect_file_meta(file_path: str) -> Dict[str, Any]:
+    """The loaded program (ProgramFile), not a subroutine LinuxCNC is in."""
     if not file_path:
         return {"file_name": "", "file_size": 0, "file_modified_ms": 0}
     try:
@@ -892,6 +899,8 @@ def main() -> None:
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
     scanner       = ProgramScanner()
     state_machine = _CycleStateMachine(calculator, scanner)
+    program_file  = ProgramFile()        # subroutine folders set from the INI once connected
+    program_ini   = None
     site_key      = key_bytes(cfg["site_key"])
     if site_key is not None and cfg_path and readable_by_others(cfg_path):
         logger.warning("%s holds the site key but other users can read it: "
@@ -956,6 +965,7 @@ def main() -> None:
         if mes_link:
             mes_link.end("unknown")          # LinuxCNC went away mid-cycle
         state_machine.reset()
+        program_file.reset()
         gcode_sender.reset()
 
     gate                             = PacketGate(poll_interval_s, idle_heartbeat_interval_s)
@@ -1083,8 +1093,19 @@ def main() -> None:
         # ------------------------------------------------------------------
         # Scan the loaded G-code file (no-op unless path/mtime/size changed)
         # ------------------------------------------------------------------
+        # stat.file names the subroutine while one runs (an M6 remap, an
+        # O-call): ProgramFile keeps the program the operator loaded.
+        file_path, in_subroutine = program_file.program, False
         try:
-            file_path = _safe_get(stat_channel, "file", "") or ""
+            ini = _safe_get(stat_channel, "ini_filename", "") or ""
+            if ini != program_ini:
+                program_ini = ini
+                program_file.set_dirs(subroutine_dirs(ini))
+            busy = (state_machine._state != state_machine.IDLE or
+                    _safe_get(stat_channel, "interp_state", None) != linuxcnc.INTERP_IDLE)
+            file_path, in_subroutine = program_file.update(
+                _safe_get(stat_channel, "file", "") or "",
+                int(_safe_get(stat_channel, "call_level", 0) or 0), busy)
             scanner.load(file_path)
         except Exception as exc:
             logger.debug("Program scan error: %s", exc)
@@ -1094,7 +1115,7 @@ def main() -> None:
         # ------------------------------------------------------------------
         previous_cycle_state = state_machine._state
         try:
-            current_cycle_state = state_machine.update(stat_channel)
+            current_cycle_state = state_machine.update(stat_channel, in_subroutine)
         except Exception as exc:
             logger.error("State machine error: %s", exc)
             current_cycle_state = "UNKNOWN"
@@ -1159,8 +1180,7 @@ def main() -> None:
         # Send G-code file if new/changed
         # ------------------------------------------------------------------
         try:
-            gcode_sender.check_and_send(_safe_get(stat_channel, "file", "") or "",
-                                        _collect_file_meta(stat_channel), sender.send)
+            gcode_sender.check_and_send(file_path, _collect_file_meta(file_path), sender.send)
         except Exception as exc:
             logger.debug("G-code file send error: %s", exc)
 
@@ -1221,7 +1241,7 @@ def main() -> None:
                 "spindles": _collect_spindle_data(stat_channel),
 
                 # File
-                **_collect_file_meta(stat_channel),
+                **_collect_file_meta(file_path),
 
                 # NML message text — always [] unless read_error_channel is on.
                 # Faults are reported by exec_state (1 = EXEC_ERROR), cmd_state
@@ -1285,8 +1305,9 @@ def main() -> None:
     logger.info("Shutting down.")
     snap = calculator.snapshot()
     if snap.is_running:
-        logger.warning("Shutdown with active cycle — recording as abort.")
-        calculator.abort_cycle()
+        calculator.drop_cycle()        # not an abort: the machine may finish it
+    if mes_link:
+        mes_link.end("unknown")        # stored by the worker before it stops
     journal_srv.stop()
     journal.close()
     if mes_status_writer:
