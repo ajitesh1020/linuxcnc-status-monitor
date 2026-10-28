@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-28
+
 ### Fixed
 
 - **`--check` after the MES service moves back.** When the site service came
