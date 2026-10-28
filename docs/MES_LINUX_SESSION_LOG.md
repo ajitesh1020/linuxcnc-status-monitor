@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; agent `G28` fix merged and checked on the machine).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; `G28` fix checked on the machine; re-enrol fix merged).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -298,7 +298,13 @@ Not the cause: homing, Pause/Resume, first run after machine on. The `M5` / end 
 I/O side; what it waited on is not known (no trace of that run, no AXIS message noted). Traces (read-only, 50 Hz,
 `g28_trace.py`) in `~/fw-test/traces-2026-10-28/`. If it happens again: note any AXIS message and run a trace.
 
-**Found, not fixed yet: re-enrolling with a different site while the agent's own events wait loses them.**
+**Re-enrolling with a different site while the agent's own events wait loses them: fixed in agent #43**
+(merged 28 Oct by this session at the user's request; .deb 1.7.0 from bc867b1 built 11:07, to be installed by
+the user; the current enrolment is not affected). Implemented the "refuse" option below: `--mes-enroll` asks
+`GET /v1/health` (over TLS trusting the checked CA) for the new site before sending the code; with events for
+another site waiting it stops (exit 1, code still valid) and says how to drain or `--discard-waiting` (marks them
+`dropped` with a reason; new spool column `reason`, added on open). 266 tests incl. the real service; CLI smoke
+test with a temporary HOME and service. The original note:
 Waiting events carry the old `site_id`; the new service rejects them as `site_mismatch`, which is final (the
 spool marks them `acked` like any receipt and prunes them later; only a warning in `agent.log` remains). MillWright events are not affected (`site_id` null). This test
 avoided it only by draining by hand first. Options:
