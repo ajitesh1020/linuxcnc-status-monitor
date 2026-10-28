@@ -64,6 +64,14 @@ class ProgramScanTests(unittest.TestCase):
             p = ProgramInfo.from_lines(["G21", other, "M2"])
             self.assertEqual(p.first_motion_line, -1, other)
 
+    def test_g28_and_g30_are_moves(self):
+        for move in ("G28", "G30", "g28", "G028", "G28 (park)", "G91 G28 Z0"):
+            p = ProgramInfo.from_lines(["G21", "G0 X1", move, "M2"])
+            self.assertEqual(p.tail_line, 3, move)
+        for other in ("G28.1", "G30.1", "G280", "G300"):
+            p = ProgramInfo.from_lines(["G21", "G0 X1", other, "M2"])
+            self.assertEqual(p.tail_line, 2, other)
+
     def test_m20_and_m300_are_not_program_end(self):
         p = ProgramInfo.from_lines(["G0 X1", "M20", "M300", "G0 X2", "M02"])
         self.assertEqual(p.end_line, 5)
@@ -110,7 +118,28 @@ class _Machine:
         return self.calc.snapshot()
 
 
+# The end of SJ-942_Cutting1_2.NC (two-PC J test, 28 Oct 2026): the second
+# G00 Z20 does not move (already at Z20), so LinuxCNC never shows it; the bare
+# G28 is the last line shown before M30.
+G28_FOOTER_PROGRAM = (["G21", "G00 Z20.000"]
+                      + [f"G01 X{i} Y{i} F600" for i in range(100)]
+                      + ["G00 Z20.00", "(FOOTER_BEGIN)", "G00 Z20.00", "(park)", "M5",
+                         "G28 (If required move machine to parking position)",
+                         "M30( End of program)", "(FOOTER_END)"])
+
+
 class PartCountingScenarioTests(unittest.TestCase):
+    def test_run_ending_with_bare_g28_completes(self):
+        m = _Machine(G28_FOOTER_PROGRAM)
+        self.assertEqual((m.prog.tail_line, m.prog.end_line), (108, 109))
+        snap = m.run(list(range(2, 104)) + [108])     # 105 never shows
+        self.assertEqual((snap.parts_produced, snap.abort_count), (1, 0))
+
+    def test_run_stopped_before_g28_is_aborted(self):
+        m = _Machine(G28_FOOTER_PROGRAM)
+        snap = m.run(list(range(2, 104)))
+        self.assertEqual((snap.parts_produced, snap.abort_count), (0, 1))
+
     def test_full_run_counts_even_with_stale_line_from_previous_run(self):
         m = _Machine()
         for n in range(1, 5):   # the log case: same program four times

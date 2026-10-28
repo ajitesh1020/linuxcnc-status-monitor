@@ -46,12 +46,15 @@ _SKIP_RE = re.compile(r"^(\s*$|;|%|\(|o\s*\d)", re.IGNORECASE)
 # Program end word — M2 / M30 (also M02, M030), not M20 / M300.
 _END_WORD_RE = re.compile(r"(?<![A-Z0-9.])M\s*0*(?:2|30)(?![0-9.])", re.IGNORECASE)
 _PERCENT_RE = re.compile(r"^\s*%\s*$")
-# A move: an axis word, or G0-G3 / G38.x probe / G73-G76 / G81-G89 canned cycles.
+# A move: an axis word, or G0-G3 / G28 / G30 (go home / to the G30 position)
+# / G38.x probe / G73-G76 / G81-G89 canned cycles. A bare G28 at the end of a
+# program is often its last move; LinuxCNC shows it as motion_line.
 # Not G4 (dwell): LinuxCNC never shows a dwell as motion_line, so a dwell before
 # the first real move would make a run from the top look like Run From Here.
 _MOTION_RE = re.compile(
     r"(?<![A-Z#<_])(?:[XYZABCUVW]\s*[-+.\d\[#]"
-    r"|G\s*0*[0-3](?![\d.])|G\s*38\.\d|G\s*7[3-6](?![\d.])|G\s*8[1-9](?![\d.]))",
+    r"|G\s*0*[0-3](?![\d.])|G\s*0*(?:28|30)(?![\d.])|G\s*38\.\d"
+    r"|G\s*7[3-6](?![\d.])|G\s*8[1-9](?![\d.]))",
     re.IGNORECASE,
 )
 # Lines with axis words that set offsets rather than move.
