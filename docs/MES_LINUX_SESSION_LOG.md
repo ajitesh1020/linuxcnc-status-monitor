@@ -20,7 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
-| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | not pushed yet | Built 28 Oct; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **to do** (see below) |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 (open) | Built 28 Oct; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **to do** (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -269,7 +269,7 @@ Built from FloorWatch `main` `docs/MES_SERVICE_DISCOVERY.md` section 2 (the prom
   5 s, `site_id cb6a4a6c…`, `ca_sha256 add2f98b…` = this PC's pinned CA; the new `Finder` with the real
   enrolment returns `[("192.168.0.104", 8443, "probe")]`.
 
-**Windows check (to do):** needs the K build installed on OFC_PC (PR merged, a .deb), then the Windows PC
+**Windows check (to do):** needs the K build installed on OFC_PC (agent #47 merged, a .deb), then the Windows PC
 restarted with a new address (if the router gives .104 again: a temporary static address on Windows). Expect
 within 30 s the service's certificate names the new address; at the agent's next failed send
 `MES service moved: https://192.168.0.104:8443 -> https://<new>:8443 (probe)`; queue drains; `--check` shows
