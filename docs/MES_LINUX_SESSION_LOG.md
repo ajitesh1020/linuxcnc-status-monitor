@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; agent `G28` fix on a branch).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; agent `G28` fix merged and checked on the machine).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -276,7 +276,27 @@ motion: already at Z20, so LinuxCNC never shows it), `M5`, `G28` (188), `M30` (1
 last move; since agent #38 it also drops motion lines that are not moves of the program, so 188 was ignored and
 the last move kept was 183 → aborted at 99 % (both SJ-942 runs on 28 Oct; MillWright: completed). On 26 Oct,
 before #38, 188 still counted. Fix: `G28` / `G30` count as moves (`G28.1` / `G30.1` still do not); branch
-`fix/g28-is-a-move` (f77cd15; 246 tests pass, 5 skip; new scan test and two end-to-end tests): agent #41.
+`fix/g28-is-a-move` (f77cd15; 246 tests pass, 5 skip; new scan test and two end-to-end tests): agent #41, merged; checked on the machine below.
+
+**`G28` fix on the machine (agent #41, merged 28 Oct by this session at the user's request; .deb 1.7.0 from
+a52d585 installed by the user 10:28).** SJ-942 to M30 four times; MillWright and agent agree every time (both
+`completed`, line 188, `explicit`), all events acked by the Windows service:
+
+| Run | Condition | Result |
+|---|---|---|
+| 10:37:50-10:39:28 | not homed | completed / completed |
+| 10:42:12-10:43:51 | not homed | completed / completed |
+| 10:44:54-10:46:44 | Pause at line 91 (10:45:38), Resume 10:45:49 | completed / completed |
+| 10:51:33-10:53:11 | E-stop, reset, machine on, then run | completed / completed |
+
+**One stall, not reproduced (10:29:33-10:31:46).** First run after the .deb install and a LinuxCNC restart
+(E-stop reset / machine on 10:29:13), not homed (`NO_FORCE_HOMING = 1`), paused 10:30:23-10:30:26 at line 102.
+Motion finished line 183 at 10:31:14; then `exec_state` 5 (`WAITING_FOR_IO`) for 32 s, no axis moved (position
+= end of line 183), until the user pressed Stop. Both logged it `aborted`, line 183 (correct for a Stop). In the
+four runs above, after line 183 the spindle goes off and the `G28` starts within 20 ms (`exec_state` 7 → 3).
+Not the cause: homing, Pause/Resume, first run after machine on. The `M5` / end of program go through the
+I/O side; what it waited on is not known (no trace of that run, no AXIS message noted). Traces (read-only, 50 Hz,
+`g28_trace.py`) in `~/fw-test/traces-2026-10-28/`. If it happens again: note any AXIS message and run a trace.
 
 **Found, not fixed yet: re-enrolling with a different site while the agent's own events wait loses them.**
 Waiting events carry the old `site_id`; the new service rejects them as `site_mismatch`, which is final (the
@@ -307,9 +327,8 @@ avoided it only by draining by hand first. Options:
 
 1. (Done 27-28 Oct) ATC pick/drop check run again: `atc_check` logged (see below and the two-PC test).
    Still open: a trace of a Stop after the last M6 (15:48 case below).
-2. (Done 28 Oct) Two-PC J test. Still to do: merge agent #41 (`G28`); then install the
-   .deb and run SJ-942 to the end (agent should say completed). Optional: `floorwatch-service status`
-   should now show 13 events.
+2. (Done 28 Oct) Two-PC J test; `G28` fix (agent #41) installed and checked. Watch for the
+   `WAITING_FOR_IO` stall at the end of a run (seen once, 10:29); if it happens, note the AXIS message.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
 4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
