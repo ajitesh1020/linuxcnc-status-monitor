@@ -743,13 +743,21 @@ def _parse_args() -> argparse.Namespace:
              "one-time code from 'floorwatch-service enroll-code', then exit.",
     )
     parser.add_argument(
+        "--discard-waiting", action="store_true", default=False,
+        help="With --mes-enroll: events waiting to be sent to ANOTHER site (which the new site "
+             "would reject) are discarded instead of stopping the enrolment.",
+    )
+    parser.add_argument(
         "--mes-status", action="store_true", default=False,
         help="Print the MES readout (operator, last scan, queue, site link) the running agent "
              "writes to mes_status.json, then exit.",
     )
     parser.add_argument("--version", action="version",
                         version=f"lcnc-status-agent {AGENT_VERSION} (protocol {PROTOCOL_VERSION})")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.discard_waiting and not args.mes_enroll:
+        parser.error("--discard-waiting only goes with --mes-enroll")
+    return args
 
 
 def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) -> None:
@@ -788,14 +796,17 @@ def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) 
 
 
 def _run_enroll(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str,
-                url: str, code: str) -> int:
+                url: str, code: str, discard_waiting: bool = False) -> int:
     """--mes-enroll: enrol with the site service; offer to set mes_service_url."""
     id_path = agent_identity.resolve_path(cfg["machine_uuid_file"], USER_CONFIG_DIR)
     machine_uuid = agent_identity.load_or_create(id_path)
     directory = agent_mes_forward.mes_dir(USER_CONFIG_DIR)
     print(f"Enrolling {machine_name} ({machine_uuid or 'no machine_uuid'}) with {url} ...")
     try:
-        doc = agent_mes_forward.enroll(url, code, machine_uuid or "", machine_name, directory)
+        guard = agent_mes_forward.waiting_guard(os.path.join(USER_CONFIG_DIR, "mes_spool.db"),
+                                                discard_waiting)
+        doc = agent_mes_forward.enroll(url, code, machine_uuid or "", machine_name, directory,
+                                       before_send=guard)
     except agent_mes_forward.EnrolError as exc:
         print(f"Enrolment failed: {exc}", file=sys.stderr)
         return 1
@@ -855,7 +866,8 @@ def main() -> None:
         _run_check(cfg_path, cfg, machine_name)
         return
     if args.mes_enroll:
-        sys.exit(_run_enroll(cfg_path, cfg, machine_name, *args.mes_enroll))
+        sys.exit(_run_enroll(cfg_path, cfg, machine_name, *args.mes_enroll,
+                             discard_waiting=args.discard_waiting))
     if args.mes_status:
         path = agent_mes_status.status_path(USER_CONFIG_DIR)
         print("\n".join(agent_mes_status.format_lines(*agent_mes_status.read(path))))

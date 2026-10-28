@@ -67,7 +67,7 @@ class SchemaTests(Base):
             ("seq", "INTEGER", 0, None, 1), ("event_id", "TEXT", 1, None, 0), ("type", "TEXT", 1, None, 0),
             ("occurred_at", "INTEGER", 1, None, 0), ("body", "TEXT", 1, None, 0),
             ("state", "TEXT", 1, "'pending'", 0), ("attempts", "INTEGER", 1, "0", 0),
-            ("acked_at", "INTEGER", 0, None, 0)])
+            ("acked_at", "INTEGER", 0, None, 0), ("reason", "TEXT", 0, None, 0)])
         self.assertEqual(cols["cursors"], [("source", "TEXT", 0, None, 1), ("epoch", "TEXT", 0, None, 0),
                                            ("position", "INTEGER", 1, None, 0)])
         self.assertEqual(s._db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
@@ -204,6 +204,70 @@ class BudgetTests(Base):
         self.assertIsNone(s.cursor("millwright"))                  # the outbox is not advanced
         s.add("scanner.state", SCANNER, self.clock[0], force=True)  # e.g. reporting the full spool
         self.assertEqual(len(self.rows()), stored + 1)
+
+
+OLD_SITE = "7844c24c-f48b-4f71-b0e9-a18edf34e157"
+NEW_SITE = "cb6a4a6c-7625-4042-8f42-b4f28b7bb75d"
+
+
+class OtherSiteTests(Base):
+    """Re-enrolment with another site (--mes-enroll, waiting_guard)."""
+
+    def fill(self):
+        s = self.spool()
+        s.add("scanner.state", SCANNER, self.clock[0])                 # 1: site null (before enrolment)
+        s.set_site_id(OLD_SITE)
+        for _ in range(3):
+            s.add("scanner.state", SCANNER, self.clock[0])             # 2-4: old site
+        s.append([mw_event(1, str(uuid.uuid4()))])                     # 5: MillWright, site null
+        s.mark_acked([2])                                              # 2 already sent
+        return s
+
+    def test_counts_only_waiting_events_of_another_site(self):
+        self.fill()
+        self.assertEqual(ms.waiting_for_other_site(self.path, NEW_SITE), {OLD_SITE: 2})
+        self.assertEqual(ms.waiting_for_other_site(self.path, OLD_SITE), {})   # same site: fine
+        self.assertEqual(ms.waiting_for_other_site(self.path, None), {OLD_SITE: 2})
+        self.assertEqual(ms.waiting_for_other_site(os.path.join(self.tmp.name, "none.db"), NEW_SITE), {})
+
+    def test_drop_marks_them_with_a_reason_and_leaves_the_rest(self):
+        s = self.fill()
+        self.clock[0] += 60
+        n = ms.drop_waiting_for_other_site(self.path, NEW_SITE, "why", now=lambda: self.clock[0])
+        self.assertEqual(n, 2)
+        with sqlite3.connect(self.path) as db:
+            got = db.execute("SELECT seq, state, reason, acked_at FROM spool ORDER BY seq").fetchall()
+        self.assertEqual([(r[0], r[1], r[2]) for r in got], [
+            (1, "pending", None), (2, "acked", None), (3, "dropped", "why"), (4, "dropped", "why"),
+            (5, "pending", None)])
+        self.assertEqual(got[2][3], int(self.clock[0] * 1000))
+        self.assertEqual([seq for seq, _ in s.pending()], [1, 5])       # never sent
+        s.mark_acked([3, 4])                                            # a late receipt changes nothing
+        self.assertEqual(self.rows()[2][5], "dropped")
+        self.assertEqual(ms.waiting_for_other_site(self.path, NEW_SITE), {})
+
+    def test_dropped_rows_are_pruned_like_acked_ones(self):
+        s = self.fill()
+        ms.drop_waiting_for_other_site(self.path, NEW_SITE, "why", now=lambda: self.clock[0])
+        self.clock[0] += 8 * 86400
+        self.assertEqual(s.prune(), 3)                                  # 2 (acked), 3 and 4 (dropped)
+        self.assertEqual([r[0] for r in self.rows()], [1, 5])
+
+    def test_spool_without_reason_column_gets_it(self):
+        os.makedirs(os.path.dirname(self.path))
+        with sqlite3.connect(self.path) as db:
+            db.executescript(ms.SCHEMA.replace(", reason TEXT", ""))
+        self.assertNotIn("reason", [c[1] for c in sqlite3.connect(self.path).execute("PRAGMA table_info(spool)")])
+        self.assertEqual(ms.drop_waiting_for_other_site(self.path, NEW_SITE, "why"), 0)
+        self.assertIn("reason", [c[1] for c in sqlite3.connect(self.path).execute("PRAGMA table_info(spool)")])
+        self.spool()                                                    # and Spool opens it
+
+    def test_old_spool_opened_by_the_agent_gets_the_column(self):
+        os.makedirs(os.path.dirname(self.path))
+        with sqlite3.connect(self.path) as db:
+            db.executescript(ms.SCHEMA.replace(", reason TEXT", ""))
+        self.spool()
+        self.assertIn("reason", [c[1] for c in sqlite3.connect(self.path).execute("PRAGMA table_info(spool)")])
 
 
 class PruneTests(Base):

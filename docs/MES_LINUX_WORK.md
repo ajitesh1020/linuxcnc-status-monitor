@@ -225,6 +225,18 @@ Follow it exactly. Agent side:
   (`{"service_url", "site_id", "machine_id", "not_after"}`). It writes
   `mes_service_url` into `config.yaml` only with the user's OK. `--check` shows
   the service URL, site id and certificate expiry (never the key).
+- **Re-enrolment with another site** (found in the two-PC test, 27 Oct 2026):
+  events already in the spool carry the old `site_id`, and the new service
+  rejects them as `site_mismatch`, which is final. So after the CA check and
+  before the code is sent, enrolment asks `GET /v1/health` (over TLS trusting
+  that CA) for the new site. If pending events stamped with another site wait
+  (MillWright's have `site_id` null and are not affected), it **refuses**,
+  prints the count and the two ways on, and the code stays valid:
+  drain them (run the old service until `--mes-status` shows the queue empty)
+  or enrol with `--discard-waiting`, which marks them `dropped` with a reason
+  (never sent; pruned after 7 days like acked rows). A service that does not
+  say its site is treated the same way. Waiting events are not re-stamped with
+  the new site: they happened under the old enrolment.
 - **Spool:** after enrolment `meta.site_id` is set (§4.4).
 - **Forwarder** (`agent_mes_forward.py`, own thread, never in the sampling
   loop): `http.client.HTTPSConnection` with an `ssl` context holding
