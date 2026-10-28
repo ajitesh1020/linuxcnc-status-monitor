@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **A bare `G28` / `G30` is a move.** A program ending `G00 Z20` (already at
+  Z20, so LinuxCNC never shows it), `G28`, `M30` was logged as aborted at 99 %
+  although it ran to the end (`SJ-942_Cutting1_2.NC`, two-PC J test 28 Oct;
+  MillWright said completed). The agent did not count `G28` as a move, so the
+  last move it expected was the `G00 Z20`, and since the remap fix it also
+  ignored motion line 188 (the `G28`) as "not a move". `G28` and `G30` now
+  count as moves; `G28.1` / `G30.1` still do not.
 - **A subroutine is not the program.** While LinuxCNC runs a remapped code or
   an O-call from another file (an M6 tool change such as MillWright's
   `rack_change.ngc`), `stat.file` names that file and the line numbers count
