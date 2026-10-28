@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-10-28
+
 ### Fixed
 
 - **Re-enrolling with another site no longer loses waiting events.** Events
