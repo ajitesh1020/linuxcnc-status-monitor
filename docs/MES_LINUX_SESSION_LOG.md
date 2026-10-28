@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 27 Oct 2026 (version 1.7.0, H impact runs passed, pick/drop Stop test passed, two-PC J test started).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; agent `G28` fix on a branch).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -19,7 +19,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check **passed** 26 Oct |
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
-| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct (see below) |
+| J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -235,44 +235,66 @@ reset, from LinuxCNC start) had 995 924 / 272 608. Runs 2 and 4: `cycle.observed
 `execution_id` as MillWright. While the agent was stopped MillWright kept its events; the agent took them
 within seconds of starting (queue 38 → 42).
 
-## Two-PC J test (27 Oct, in progress)
+## Two-PC J test (27-28 Oct)
 
-FloorWatch site service as a Windows service on the Windows PC: `https://192.168.0.105:8443`, site
-`cb6a4a6c-7625-4042-8f42-b4f28b7bb75d`, CA fingerprint `add2f98bb0fdbd9d…`, built from FloorWatch main 1db515f +
-`fix/service-acl`, contract 1.2. The user has the enrolment code (single use, 24 h from 27 Oct; not recorded
-here; ask for a fresh one if it has run out).
+**Passed 28 Oct.** FloorWatch site service as a Windows service on the Windows PC: `https://192.168.0.104:8443`
+(was .105 on 27 Oct), site `cb6a4a6c-7625-4042-8f42-b4f28b7bb75d`, CA fingerprint `add2f98bb0fdbd9d…`, FloorWatch
+`main` with floorwatch #49 (service install permissions) and contract 1.2. OFC_PC 192.168.0.120, same /24.
 
-Done:
-- **Waiting events drained first** (user's choice, rather than letting them be rejected): the queue held 92
-  events stamped with the loopback test site `7844c24c…`. `~/fw-service-test` started once (17:43, 127.0.0.1
-  only); queue 92 → 0 within ~2 min, spool 119 `acked`, no errors in its log. Then stopped and
-  `~/fw-service-test` removed. The agent shows `offline` until enrolled again (its service URL still points at
-  the removed loopback service); nothing waits to send.
+1. **Waiting events (27 Oct).** The queue held 92 agent events stamped with the loopback test site `7844c24c…`
+   (would be `site_mismatch`, final, at the new service). User's choice: drain rather than let them be rejected.
+   `~/fw-service-test` started once (17:43, 127.0.0.1 only): queue 92 → 0 in ~2 min, then stopped and removed.
+   During the drain one `execution.started` (mode `atc_check`) was **rejected** (`enum at payload/mode`): that
+   service was FloorWatch a3399b6, contract 1.1, which has no `atc_check`; the event is lost. On 28 Oct one
+   event waited: a MillWright `operator.session_ended` (shutdown, 27 Oct) with `site_id: null`, which the
+   service accepts (`ingest.py` checks the site only when it is set), so no second drain.
+2. **Network.** 27 Oct: ping and TCP 8443 timed out (Windows network profile / firewall). Fixed by the user;
+   28 Oct `curl -k https://192.168.0.104:8443/v1/health` returns the site above.
+3. **Enrolment (28 Oct 10:02).** Run by the user in a terminal (first attempt did nothing: no new files, agent
+   not restarted; second attempt OK). `--mes-enroll` wrote `mes/` (ca, client cert + key, `enrolment.json`)
+   and, with "y", `mes_service_url`; agent restarted 10:02:25. `--check`: service `https://192.168.0.104:8443`,
+   site `cb6a4a6c…`, certificate valid until 2027-10-28. `--mes-status`: link **ok**, queue 0. Spool `site_id`
+   now `cb6a4a6c…`; the waiting MillWright event acked 10:02. Windows `floorwatch-service status`: ledger
+   **1 event, 1 agent enrolled**.
+4. **AXIS runs (10:05-10:10).** 7 events sent and acked within ~2 s each, none rejected; Windows ledger
+   1 → **8 events**, 1 agent enrolled.
 
-Blocked:
-- `curl -k https://192.168.0.105:8443/v1/health` times out (OFC_PC 192.168.0.120, same /24); ping times out,
-  TCP 8443 does not answer. Likely the Windows network profile (Public) or firewall. The user fixes it on
-  28 Oct (`Get-NetConnectionProfile` → Private; inbound rule TCP 8443 if missing; `floorwatch-service status`).
+   | Run | MillWright | Agent `cycle.observed` |
+   |---|---|---|
+   | `SJ-942_Cutting1_2.NC`, 10:05:10-10:06:49 | normal, completed, line 188 | **aborted** (99 %), explicit |
+   | Pick/Drop Check `atc_pickdrop_100705.ngc`, 10:07-10:10 | `atc_check`, completed, no job | completed, `time_window` |
 
-Still to do, in order:
-1. Health returns site `cb6a4a6c…`.
-2. With the user's OK, in a terminal (the "y" prompt writes `mes_service_url`):
-   `lcnc-status-agent --mes-enroll https://192.168.0.105:8443 <code>`; restart the agent; `--check` shows
-   service, site and certificate expiry; `--mes-status` link `ok`.
-3. In AXIS: one normal run and one Pick/Drop Check; `floorwatch-service status` on Windows (Administrator)
-   before and after: event count goes up, agent enrolled.
-4. Outage: `floorwatch-service stop` on Windows during a run: link offline, queue grows; after
-   `floorwatch-service start` the queue drains to 0.
+   `atc_check` accepted by the contract 1.2 service.
+5. **Outage (10:15-10:18).** `floorwatch-service stop` during an SJ-942 run: agent log 10:16:17 "not reachable
+   (timed out)", link `ok -> offline`; the run went on; 5 events waited (logout, login, `execution.started`,
+   `cycle.observed`, `execution.ended`). After `floorwatch-service start` all 5 acked at 10:18:41 in one go,
+   queue 0, link ok, none rejected. (The Windows status pasted afterwards still said 8 events: taken just
+   before 10:18:41; expected 13.)
 
-Found, not fixed yet: **re-enrolling with a different site while the agent's own events wait loses them.**
-Waiting events carry the old `site_id`; the new service rejects them as `site_mismatch`, which is final.
-Proposed fix: `--mes-enroll` refuses when events are waiting and the new site differs, and prints the count
-and how to drain (start the old service) or override (`--discard-waiting`, which marks them dropped with a
-reason, not rejected). Re-stamping them with the new site is not proposed: they happened under the old
-site's enrolment, and changing their site would misattribute them. A warning alone is too easy to miss.
+**Agent bug found: a bare `G28` is not counted as a move.** SJ-942 ends `G00 Z20` (line 183), `G00 Z20` (185, no
+motion: already at Z20, so LinuxCNC never shows it), `M5`, `G28` (188), `M30` (189). The agent took 185 as the
+last move; since agent #38 it also drops motion lines that are not moves of the program, so 188 was ignored and
+the last move kept was 183 → aborted at 99 % (both SJ-942 runs on 28 Oct; MillWright: completed). On 26 Oct,
+before #38, 188 still counted. Fix: `G28` / `G30` count as moves (`G28.1` / `G30.1` still do not); branch
+`fix/g28-is-a-move` (f77cd15; 246 tests pass, 5 skip; new scan test and two end-to-end tests). Not pushed yet.
+
+**Found, not fixed yet: re-enrolling with a different site while the agent's own events wait loses them.**
+Waiting events carry the old `site_id`; the new service rejects them as `site_mismatch`, which is final (the
+spool marks them `acked` like any receipt and prunes them later; only a warning in `agent.log` remains). MillWright events are not affected (`site_id` null). This test
+avoided it only by draining by hand first. Options:
+- *Warn only:* too easy to miss in a terminal; the events are still lost.
+- *Re-stamp the waiting events with the new site:* not proposed. They happened under the old site's enrolment;
+  changing their site misattributes them, and the event body is what the producer wrote.
+- *Refuse (proposed):* `--mes-enroll` checks the spool before sending the code. If agent events are waiting and
+  the new site differs from the spool's `site_id`, it stops, prints the count and the two ways on: drain (start
+  the old service until `--mes-status` shows queue 0) or `--discard-waiting`, which marks them with a new spool
+  state `dropped` and a reason (kept for the record, not sent). Same site, or nothing waiting: enrol as now. The
+  code is not used when it refuses.
 
 ## Contract gaps found
 
+- (Seen 27 Oct) A contract 1.1 service rejects contract 1.2 `atc_check` as `enum at payload/mode`, final. The
+  site service must be on the contract version of its producers before they send.
 - (Gap, by design) The agent's `clock.boot_id` is its session id (contract README example), MillWright's is the
   kernel boot id, so the service cannot order agent and MillWright events from one boot by `mono_ms`.
 
@@ -283,10 +305,11 @@ site's enrolment, and changing their site would misattribute them. A warning alo
 
 ## Pending — needs the user
 
-1. **ATC pick/drop check run again** (Pick/Drop Check button in the program panel, not
-   `nc_files/atc_tool_pick_drop_check.ngc`) after installing the two fixes below: check `atc_check`.
-2. **Two-PC J test:** fix the Windows PC's network profile / firewall (28 Oct), then OK to enrol;
-   see "Two-PC J test" above.
+1. (Done 27-28 Oct) ATC pick/drop check run again: `atc_check` logged (see below and the two-PC test).
+   Still open: a trace of a Stop after the last M6 (15:48 case below).
+2. (Done 28 Oct) Two-PC J test. Still to do: OK to push `fix/g28-is-a-move`; after merge, install the
+   .deb and run SJ-942 to the end (agent should say completed). Optional: `floorwatch-service status`
+   should now show 13 events.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
 4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
