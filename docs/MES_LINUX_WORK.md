@@ -74,6 +74,7 @@ one (`python3 -m unittest discover -s tests`). Update `CHANGELOG.md`
 | H | `loop_lag_ms` (p99) in status packets; agent-on / agent-off impact runs | agent | P2.7 | — |
 | I | Scanner adapters HID / serial + scanner enrolment CLI | agent | P2.2, P2.3, P2.8 | **scanners bought (plan §16 D1)** — ask me |
 | J | MES enrolment (`--mes-enroll`) + forwarder from the spool to the site service (§4.6, §6) | agent | P2.5 | F. The service API is ready: FloorWatch `docs/MES_SERVICE_API.md` |
+| K | The agent follows the site service to a new address: UDP 5007 probe / announcements, switch only after the normal TLS check, `mes/service_address.json` (§4.8) | agent | — | J. Service side done: FloorWatch `docs/MES_SERVICE_DISCOVERY.md` (#51) |
 
 If a package is blocked, say so and move to the next one. A and B are small;
 do them first: the Windows session needs A's field to build its side.
@@ -289,6 +290,43 @@ at start when it is off). Display only: nothing decides anything from it.
   `~/linuxcnc-monitor-agent/mes_status.json`) and shows the strip only when
   `[MW_MES] OUTBOX = 1`.
 
+### 4.8 Finding the service at a new address (package K)
+
+Interface: FloorWatch `docs/MES_SERVICE_DISCOVERY.md` (section 2). The service
+announces itself on UDP 5007 every 5 s and answers probes; its certificate
+follows the PC's addresses. Agent side (`agent_mes_discovery.py`, used by the
+forwarder thread only):
+
+- **When:** after **3 connection failures in a row** (timeout, refused,
+  unreachable, reset, or a service certificate that does not verify, e.g. one
+  not naming the address). Any HTTP answer resets the count; `401` / `403` never
+  lead to a look. Repeated on every failed round, so with the forwarder's
+  backoff (1 s → 5 min).
+- **Looking:** one probe `{"type": "fw.service_probe", "v": 1, "site_id"}` per
+  interface the status packets use (`monitor_interface` respected, Mesa and
+  `exclude_interfaces` skipped), to that interface's broadcast address from
+  its own address; answers collected for up to 3 s (0.3 s after the first).
+  Meanwhile announcements on UDP 5007 are accepted too (`SO_REUSEADDR` /
+  `SO_REUSEPORT`). That socket is open only while looking: a service on the
+  same PC binds 5007 without sharing and must never find it taken (then the
+  agent uses probe answers only).
+- **Accept:** only `fw.service_beacon` v1 whose `site_id` is the enrolled site
+  and whose `ca_sha256` is SHA-256 of the pinned `mes/ca.crt`. The address is
+  the datagram's **source**. Probe answers are tried before announcements.
+- **Switch:** `https://<source>:<port>` with the normal TLS check (pinned CA,
+  certificate naming that address, client certificate) and `GET
+  /v1/capabilities` = 200. Then one log line `MES service moved: A -> B
+  (probe|announcement)`; the link stays `offline` until the next normal round
+  succeeds. A candidate that fails is logged once per address and reason.
+- **Remember:** `mes/service_address.json` (0600, atomic) `{"url",
+  "found_at_ms", "via", "configured_url"}`. `configured_url` (an addition to the
+  design's keys) is the `mes_service_url` it replaces: the file is ignored once
+  `mes_service_url` is changed by hand, and `--mes-enroll` deletes it.
+  `config.yaml` is never written. `--check`: `site service  : https://B (found
+  on the network by probe on <date>; configured https://A), site …`.
+- Key: `mes_discovery_port` (default `5007`, `0` = never look), the service's
+  `discovery_port`.
+
 ## 5. Tests that must exist
 
 - A: identity created once and reused; damaged file kept and replaced; field in
@@ -314,6 +352,12 @@ at start when it is off). Display only: nothing decides anything from it.
   - a revoked agent (`floorwatch-service revoke`) stops forwarding and shows
     `mes_link.state = "rejected"`; an expired certificate shows `cert_expired`;
   - batches never exceed the limits `capabilities` returns.
+- K (`tests/test_mes_discovery.py`): only beacons of this site and CA count;
+  no look before 3 failures, none after `401` / `403`, an HTTP answer resets
+  the count; a candidate failing TLS or not answering 200 is not used; the found
+  address is used after a restart and dropped when `mes_service_url` changes or
+  the machine enrols again; the real FloorWatch service moved to another port
+  is found by probe and nothing is lost.
 - H: the loop never waits on the MES threads (a stalled spool does not raise
   `loop_lag_ms`).
 

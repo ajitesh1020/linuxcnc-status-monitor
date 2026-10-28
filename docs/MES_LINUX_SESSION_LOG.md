@@ -20,6 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | not pushed yet | Built 28 Oct; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **to do** (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -219,6 +220,64 @@ SHA-256 `1d5a2b38…b553`), marked **pre-release** (user's choice). Notes list t
 M6, the one end-of-run stall, no NTP. 1.7.0 was never tagged. The released .deb (checksum checked) installed
 on OFC_PC by the user 11:16: `--version` 1.7.1, still enrolled (site `cb6a4a6c…`), link ok, queue 0.
 
+## K — the agent follows the service to a new address (28 Oct)
+
+Built from FloorWatch `main` `docs/MES_SERVICE_DISCOVERY.md` section 2 (the prompt's
+"branch feat/service-discovery" read as `main`, as the user asked). Branch `feat/service-discovery`.
+
+- New `agent_mes_discovery.py`: probe `fw.service_probe` per interface the status packets use
+  (`monitor_interface` respected, Mesa / `exclude_interfaces` skipped), sent to that interface's broadcast
+  address from its own address; answers collected up to 3 s (0.3 s after the first). UDP 5007 is listened on
+  (`SO_REUSEADDR` / `SO_REUSEPORT`) only while looking: the service binds 5007 without sharing, so a
+  permanent listener would take the port from a service on the same PC. Accepts only `fw.service_beacon` v1
+  with this site and SHA-256 of the pinned `mes/ca.crt`; the address is the datagram's source.
+- Forwarder: counts connection failures (OSError incl. timeouts, refused, reset, and a service certificate
+  that does not verify); any HTTP answer resets the count; 401/403 never look. From the 3rd failure on, every
+  failed round looks (so with the 1 s → 5 min backoff). Switches only after the normal TLS check and
+  `GET /v1/capabilities` = 200; log `MES service moved: A -> B (probe)`; a candidate that fails is logged
+  once per address and reason.
+- `mes/service_address.json` (0600, atomic) `{url, found_at_ms, via, configured_url}`: `configured_url` is
+  my addition, so the file is ignored once `mes_service_url` is edited by hand; `--mes-enroll` deletes it.
+  `config.yaml` never written. `--check`: `https://B (found on the network by probe on <date>; configured
+  https://A)`.
+- New key `mes_discovery_port` (5007, 0 = off). `agent_net.broadcast_sources()` / `list_broadcast_sources()`
+  (`broadcast_addresses()` unchanged). New module added to the .deb build. Docs: `MES_LINUX_WORK.md`
+  (row K, §4.8, §5), `CONFIGURATION.md`, `NETWORK.md` (UDP 5007 both ways), `config.example.yaml`, CHANGELOG.
+- Tests: `tests/test_mes_discovery.py` (22), incl. the real FloorWatch service (`main`, worktree
+  `~/fw-k-src`) moved to another port on 127.0.0.1 with its own discovery port. Full suite 288 pass
+  (`FLOORWATCH_DIR=~/fw-k-src`). `~/floorwatch` was left alone (on `feat/f08-oee-estimate`).
+
+**Step 6 on OFC_PC (13:06-13:10), user's variant (the Windows firewall opens only TCP 8443):**
+- Test service from FloorWatch `main` (`~/fw-k-src`, `~/fw-venv`): `--data /tmp/fw-k init --name
+  192.168.0.120`, site `c03c905d…`, `run` on 8443. Test agent copy in `HOME=/tmp/fw-k-agent`, enrolled with
+  the real CLI (`status.py --mes-enroll https://192.168.0.120:8443 <code>`), config `mes_service_url` 8443,
+  `monitor_pc_ip 127.0.0.1`, `journal_port 0`, no MillWright. Forwarding by a driver
+  (scratchpad `k_agent.py`) that builds `Forwarder` + `Finder` from that config as `status.py` does and adds a
+  `cycle.observed` every 15 s (a second process cannot write a running agent's spool: producer seq).
+- 13:07:25-13:07:57 link ok on 8443, 3 events stored. 13:08 service stopped, 13:08:10 `run --port 8444`.
+  13:08:13 first failed send (refused); **13:08:15 `MES service moved: https://192.168.0.120:8443 ->
+  https://192.168.0.120:8444 (probe)`**, link ok, the waiting event stored. The probe went to 192.168.0.255
+  and the service on the same PC answered it.
+- `config.yaml` SHA-256 unchanged (still 8443); `service_address.json` 0600; `--check` (real CLI):
+  `site service  : https://192.168.0.120:8444 (found on the network by probe on 2026-10-28; configured
+  https://192.168.0.120:8443), site c03c905d…`.
+- Restart of the agent copy 13:09:22: `using https://192.168.0.120:8444, found on the network`, link ok at
+  once. End: spool 11 acked, ledger 11 `raw_events`; nothing lost. Test service stopped; the real agent was
+  not touched (`--mes-status` link ok, queue 0).
+- Read-only checks against the Windows service (13:10): it already runs discovery: a probe from
+  192.168.0.120 was answered by 192.168.0.104 (so its inbound UDP 5007 rule is there), announcements every
+  5 s, `site_id cb6a4a6c…`, `ca_sha256 add2f98b…` = this PC's pinned CA; the new `Finder` with the real
+  enrolment returns `[("192.168.0.104", 8443, "probe")]`.
+
+**Windows check (to do):** needs the K build installed on OFC_PC (PR merged, a .deb), then the Windows PC
+restarted with a new address (if the router gives .104 again: a temporary static address on Windows). Expect
+within 30 s the service's certificate names the new address; at the agent's next failed send
+`MES service moved: https://192.168.0.104:8443 -> https://<new>:8443 (probe)`; queue drains; `--check` shows
+both. `mes_service_url` stays .104.
+
+Also: the Stop-after-last-M6 trace (11:22-12:02, `stop_after_m6.txt`) caught nothing: LinuxCNC was not
+running in that window. Still open.
+
 ## H impact runs (27 Oct)
 
 OFC_PC: Intel i3-4170 3.70 GHz, kernel 6.1.0-53-rt-amd64, LinuxCNC 2.9.10 (POSIX realtime), AXIS with
@@ -346,6 +405,8 @@ avoided it only by draining by hand first. Options:
 2. (Done 28 Oct) Two-PC J test; `G28` fix (agent #41) installed and checked. Watch for the
    `WAITING_FOR_IO` stall at the end of a run (seen once, 10:29); if it happens, note the AXIS message.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
+3b. **Package K Windows check:** install the K build, then restart the Windows PC so it gets a new address
+   (or set a temporary static one), and tell me the new address.
 4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
    Pilot PCs need time sync.

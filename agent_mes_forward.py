@@ -34,6 +34,13 @@ the same rows go again later (backoff 1 s -> 5 min, with jitter). The service
 deduplicates, so a resend after a lost receipt answers "duplicate". A revoked
 or expired certificate stops forwarding until the machine is enrolled again.
 
+Service moved (package K, FloorWatch docs/MES_SERVICE_DISCOVERY.md): after 3
+connection failures in a row (never on 401/403) the forwarder asks its finder
+(agent_mes_discovery.Finder) where the service is now, switches only to an
+address that passes the normal TLS check and answers GET /v1/capabilities, and
+keeps it in mes/service_address.json (used after restarts; config.yaml is
+not changed).
+
 `status` (a dict replaced atomically) is what the status packet carries as
 `mes_link`: {"state": ok|offline|not_enrolled|cert_expired|rejected,
 "last_ok_ms": n} — last_ok_ms is the last 200 from the service, absent if never.
@@ -63,6 +70,8 @@ logger = logging.getLogger(__name__)
 
 MES_DIRNAME = "mes"
 KEY_FILE, CERT_FILE, CA_FILE, ENROLMENT_FILE = "client.key", "client.crt", "ca.crt", "enrolment.json"
+ADDRESS_FILE = "service_address.json"      # where the service was found (package K)
+LOOK_AFTER_FAILS = 3          # connection failures in a row before looking for the service
 TIMEOUT_S = 30.0
 CAPS_EVERY_S = 3600.0
 IDLE_POLL_S = 2.0
@@ -141,6 +150,37 @@ def load_enrolment(directory: str) -> Optional[Dict[str, Any]]:
     return doc
 
 
+def _norm_url(url: str) -> str:
+    return (url or "").strip().rstrip("/")
+
+
+def load_found(directory: str, configured_url: str) -> Optional[Dict[str, Any]]:
+    """service_address.json when it applies to `configured_url`, else None. It
+    is ignored once mes_service_url is changed by hand (or the machine enrolled
+    again: enroll() removes it)."""
+    try:
+        with open(os.path.join(directory, ADDRESS_FILE), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("url"), str):
+        return None
+    if doc.get("configured_url") != _norm_url(configured_url):
+        return None
+    try:
+        split_url(doc["url"])
+    except ValueError:
+        return None
+    return doc
+
+
+def save_found(directory: str, url: str, via: str, configured_url: str,
+               now: Callable[[], float] = time.time) -> None:
+    doc = {"url": url, "found_at_ms": int(now() * 1000), "via": via,
+           "configured_url": _norm_url(configured_url)}
+    _write_private(os.path.join(directory, ADDRESS_FILE), json.dumps(doc, indent=2).encode("utf-8"))
+
+
 def _fmt_ms(ms: Any) -> str:
     if not isinstance(ms, int) or isinstance(ms, bool):
         return "unknown"
@@ -154,12 +194,18 @@ def describe(directory: str, configured_url: str, now: Callable[[], float] = tim
         return "not enrolled (lcnc-status-agent --mes-enroll https://<service>:8443 <code>)"
     na = doc.get("not_after")
     expired = isinstance(na, int) and na <= now() * 1000
+    found = load_found(directory, configured_url) if configured_url.strip() else None
+    where = doc["service_url"]
+    if found:
+        where = "%s (found on the network by %s on %s; configured %s)" % (
+            found["url"], found.get("via", "?"), _fmt_ms(found.get("found_at_ms")), _norm_url(configured_url))
     text = "%s, site %s, certificate valid until %s%s" % (
-        doc["service_url"], doc["site_id"], _fmt_ms(na), " [EXPIRED: enrol again]" if expired else "")
+        where, doc["site_id"], _fmt_ms(na), " [EXPIRED: enrol again]" if expired else "")
     if not configured_url.strip():
         text += "  [mes_service_url not set in config: nothing is forwarded]"
-    elif configured_url.strip() != doc["service_url"]:
-        text += "  [config mes_service_url is %s]" % configured_url.strip()
+    elif _norm_url(configured_url) != doc["service_url"]:
+        text += "  [config mes_service_url is %s; enrolled with %s]" % (_norm_url(configured_url),
+                                                                       doc["service_url"])
     return text
 
 
@@ -366,6 +412,10 @@ def enroll(url: str, code: str, machine_id: str, machine_name: str, directory: s
         _write_private(os.path.join(directory, CA_FILE), ca_pem.encode("ascii"))
         _write_private(os.path.join(directory, ENROLMENT_FILE),
                        json.dumps(enrolment, indent=2).encode("utf-8"))
+        try:                       # an address found for the old enrolment does not apply
+            os.remove(os.path.join(directory, ADDRESS_FILE))
+        except FileNotFoundError:
+            pass
         return enrolment
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -452,9 +502,19 @@ class Forwarder(threading.Thread):
     def __init__(self, spool, service_url: str, directory: str, machine_id: str,
                  transport_factory: Optional[Callable[[str, str], Any]] = None,
                  wall: Callable[[], float] = time.time, clock: Callable[[], float] = time.monotonic,
-                 rand: Callable[[], float] = random.random) -> None:
+                 rand: Callable[[], float] = random.random,
+                 finder: Optional[Callable[[str, str], List[Tuple[str, int, str]]]] = None) -> None:
+        """`finder(site_id, ca_sha256)` -> [(ip, port, via)] looks for the service on the
+        network (agent_mes_discovery.Finder); None = never look."""
         super().__init__(name="mes-forwarder", daemon=True)
-        self.spool, self.url, self.dir, self.machine_id = spool, service_url.strip(), directory, machine_id
+        self.spool, self.dir, self.machine_id = spool, directory, machine_id
+        self.configured_url = _norm_url(service_url)
+        self.url = self.configured_url               # where requests go (may be a found address)
+        self.finder = finder
+        self._fails = 0                              # connection failures in a row
+        self._site_id: Optional[str] = None
+        self._ca_sha256: Optional[str] = None
+        self._look_logged: set = set()
         self.make_transport = transport_factory or (lambda url, d: Transport(url, d))
         self.wall, self.clock, self.rand = wall, clock, rand
         self._halt = threading.Event()
@@ -497,7 +557,7 @@ class Forwarder(threading.Thread):
     def _load(self) -> bool:
         """(Re)load the enrolment. False when forwarding cannot start."""
         self.transport = None
-        if not self.url:
+        if not self.configured_url:
             self._set_state("not_enrolled")
             return False
         doc = load_enrolment(self.dir)
@@ -509,9 +569,21 @@ class Forwarder(threading.Thread):
                          "enrol again", self.dir, doc["machine_id"], self.machine_id)
             self._set_state("not_enrolled")
             return False
-        if doc["service_url"] != self.url.rstrip("/"):
+        if doc["service_url"] != self.configured_url:
             logger.warning("mes_service_url %s differs from the enrolled service %s; using %s",
-                           self.url, doc["service_url"], self.url)
+                           self.configured_url, doc["service_url"], self.configured_url)
+        found = load_found(self.dir, self.configured_url)
+        url = found["url"] if found else self.configured_url
+        if found and url != self.url:
+            logger.info("MES site service: using %s, found on the network (configured %s)",
+                        url, self.configured_url)
+        self.url = url
+        self._site_id = doc["site_id"]
+        try:
+            with open(os.path.join(self.dir, CA_FILE), encoding="ascii") as f:
+                self._ca_sha256 = ca_fingerprint(f.read())
+        except (OSError, ValueError):
+            self._ca_sha256 = None                   # cannot look for the service; Transport says why
         self._cert_stamp = self._stamp()
         na = doc.get("not_after")
         if isinstance(na, int) and not isinstance(na, bool) and na <= self.wall() * 1000:
@@ -548,11 +620,15 @@ class Forwarder(threading.Thread):
             else:
                 if isinstance(exc, ssl.SSLCertVerificationError):
                     logger.error("MES site service certificate not accepted: %s", exc.verify_message)
+                self._fails += 1                     # e.g. the certificate does not name this address
                 self._offline("%s" % exc)
             return None
         except (OSError, socket.timeout, http.client.HTTPException) as exc:
+            if isinstance(exc, OSError):             # timeout, refused, unreachable, reset
+                self._fails += 1
             self._offline("%s: %s" % (type(exc).__name__, exc))
             return None
+        self._fails = 0                              # the service answered: it is there
         if status in (401, 403):
             logger.error("MES site service: %d %s — forwarding stops until the machine is "
                          "enrolled again", status, _error_of(raw) or "refused")
@@ -573,6 +649,51 @@ class Forwarder(threading.Thread):
     def _wait_s(self) -> float:
         """Backoff with jitter: between half and all of the current backoff."""
         return self._backoff * (0.5 + 0.5 * self.rand())
+
+    # -- finding the service again (package K) ---------------------------------
+    def _look(self) -> bool:
+        """After LOOK_AFTER_FAILS connection failures in a row: look for the
+        service on the network and switch to the first address that passes the
+        normal TLS check and answers GET /v1/capabilities with 200. True = switched."""
+        if self.finder is None or self._fails < LOOK_AFTER_FAILS or not self._site_id \
+                or not self._ca_sha256:
+            return False
+        try:
+            found = self.finder(self._site_id, self._ca_sha256)
+        except Exception as exc:                    # never let discovery stop forwarding
+            logger.debug("MES discovery failed: %s", exc)
+            return False
+        for ip, port, via in found:
+            url = "https://%s:%d" % (ip, port)
+            if url == self.url:
+                continue
+            why = ""
+            try:
+                transport = self.make_transport(url, self.dir)
+                status, _ = transport.request("GET", "/v1/capabilities")
+                if status != 200:
+                    why = "HTTP %d" % status
+            except ssl.SSLCertVerificationError as exc:
+                why = exc.verify_message or str(exc)
+            except (OSError, ssl.SSLError, http.client.HTTPException, ValueError) as exc:
+                why = "%s: %s" % (type(exc).__name__, exc)
+            if why:
+                if (url, why) not in self._look_logged:  # once per address and reason
+                    self._look_logged.add((url, why))
+                    logger.warning("MES site service announced at %s (%s) but not used: %s", url, via, why)
+                continue
+            old, self.url, self.transport = self.url, url, transport
+            try:
+                save_found(self.dir, url, via, self.configured_url, self.wall)
+            except OSError as exc:
+                logger.error("MES: %s not saved (%s): it is looked for again after a restart",
+                             ADDRESS_FILE, exc)
+            logger.warning("MES service moved: %s -> %s (%s)", old, url, via)
+            self._fails, self._backoff = 0, 0.0
+            self.types, self._caps_at = None, None
+            self._look_logged.clear()
+            return True
+        return False
 
     # -- capabilities --------------------------------------------------------
     def _capabilities(self) -> bool:
@@ -701,12 +822,14 @@ class Forwarder(threading.Thread):
                 return RECHECK_S
         if self.types is None or self.clock() - (self._caps_at or 0) >= CAPS_EVERY_S:
             if not self._capabilities():
-                return self._wait_s() if self.transport is not None else RECHECK_S
+                if self.transport is None:
+                    return RECHECK_S
+                return 0.0 if self._look() else self._wait_s()
         n = self.send_once()
         if self.transport is None:
             return RECHECK_S
         if self.status.get("state") == "offline" or self._backoff > 0:
-            return self._wait_s()
+            return 0.0 if self._look() else self._wait_s()
         return 0.0 if n else IDLE_POLL_S
 
     def stop(self, timeout: float = 5.0) -> None:

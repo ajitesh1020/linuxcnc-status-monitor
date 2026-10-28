@@ -124,7 +124,10 @@ and without a site key anyone can pretend to be a machine.
 5. **Host firewalls, both directions.** Dashboard PC: allow inbound UDP 5005
    only from the machines' addresses; allow outbound UDP 5006 to them.
    LinuxCNC PCs: allow inbound UDP 5006 only from the dashboard PC; the agent
-   itself only sends to UDP 5005.
+   itself only sends to UDP 5005. With MES forwarding: outbound TCP 8443 to the
+   site service, and UDP 5007 both ways with it (the agent's probes go out,
+   the service's answers and announcements come in) so the agent finds the
+   service again after its address changes (`mes_discovery_port`).
 6. **Check each machine:** `lcnc-status-agent --check` shows the interface, its
    address and broadcast address, where packets go, the history port binding
    and whether packets are signed.
