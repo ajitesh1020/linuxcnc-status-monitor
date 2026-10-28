@@ -216,8 +216,8 @@ CHANGELOG `[1.7.1] - 2026-10-28` (re-enrol fix #43, `G28` #41, remap fixes #37-#
 stop, temp-file cleanup). Tag `v1.7.1` pushed; CI built and published
 https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1.7.1 (`linuxcnc-status-agent_1.7.1_all.deb`,
 SHA-256 `1d5a2b38…b553`), marked **pre-release** (user's choice). Notes list the open items: Stop after the last
-M6, the one end-of-run stall, no NTP. 1.7.0 was never tagged. OFC_PC still runs the 1.7.0 .deb from bc867b1
-(same code as 1.7.1 apart from the version string).
+M6, the one end-of-run stall, no NTP. 1.7.0 was never tagged. The released .deb (checksum checked) installed
+on OFC_PC by the user 11:16: `--version` 1.7.1, still enrolled (site `cb6a4a6c…`), link ok, queue 0.
 
 ## H impact runs (27 Oct)
 
