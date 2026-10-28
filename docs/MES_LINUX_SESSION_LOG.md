@@ -20,7 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
-| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **to do** (see below) |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09 (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -269,11 +269,22 @@ Built from FloorWatch `main` `docs/MES_SERVICE_DISCOVERY.md` section 2 (the prom
   5 s, `site_id cb6a4a6c…`, `ca_sha256 add2f98b…` = this PC's pinned CA; the new `Finder` with the real
   enrolment returns `[("192.168.0.104", 8443, "probe")]`.
 
-**Windows check (to do):** needs 1.8.0 installed on OFC_PC, then the Windows PC
-restarted with a new address (if the router gives .104 again: a temporary static address on Windows). Expect
-within 30 s the service's certificate names the new address; at the agent's next failed send
-`MES service moved: https://192.168.0.104:8443 -> https://<new>:8443 (probe)`; queue drains; `--check` shows
-both. `mes_service_url` stays .104.
+**Windows check (28 Oct), passed.** 1.8.0 installed by the user (`dpkg` 1.8.0, agent restarted 13:26:43,
+`--version` 1.8.0; `.deb` also copied to `dist/`, checksum OK). The user restarted the Windows PC; its address
+became **192.168.0.200** (no longer answers at .104).
+- Before any event (14:08): a probe from this PC was answered by 192.168.0.200 (port 8443, same site and CA);
+  `GET /v1/health` there = 200, site `cb6a4a6c…`, over TLS trusting only the pinned CA; the service's
+  certificate now names 192.168.0.200 (also still .104, .105, 172.22.80.1, 172.24.240.1, 127.0.0.1,
+  `DESKTOP-S554SDL`, `localhost`): it followed the address. The agent still said link ok (nothing to send).
+- The user logged out of MillWright, closed AXIS, started `test_config` again, logged in and ran a program.
+  14:09:43 first send to .104: `No route to host`, link ok -> offline. **14:09:49 `MES service moved:
+  https://192.168.0.104:8443 -> https://192.168.0.200:8443 (probe)`** (6.5 s).
+- 14:12: queue 0, link ok; spool rows 154 `operator.session_ended` (14:09:39), 155 `operator.session_started`
+  (14:10:57), 156 `execution.started` (14:11:00) all acked. `service_address.json` 0600 `{url
+  https://192.168.0.200:8443, via probe, configured_url https://192.168.0.104:8443}`; `mes_service_url` in
+  `config.yaml` still .104; `--check`: `https://192.168.0.200:8443 (found on the network by probe on
+  2026-10-28; configured https://192.168.0.104:8443)`.
+- Not checked from here: the Windows ledger rows (acked = the service gave a receipt).
 
 Also: the Stop-after-last-M6 trace (11:22-12:02, `stop_after_m6.txt`) caught nothing: LinuxCNC was not
 running in that window. Still open.
@@ -415,7 +426,7 @@ avoided it only by draining by hand first. Options:
 2. (Done 28 Oct) Two-PC J test; `G28` fix (agent #41) installed and checked. Watch for the
    `WAITING_FOR_IO` stall at the end of a run (seen once, 10:29); if it happens, note the AXIS message.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
-3b. **Package K Windows check:** install 1.8.0 (`sudo dpkg -i linuxcnc-status-agent_1.8.0_all.deb`), then restart the Windows PC so it gets a new address
+3b. (Done 28 Oct 14:09) **Package K Windows check:** install 1.8.0 (`sudo dpkg -i linuxcnc-status-agent_1.8.0_all.deb`), then restart the Windows PC so it gets a new address
    (or set a temporary static one), and tell me the new address.
 4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
