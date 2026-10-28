@@ -157,7 +157,8 @@ def _norm_url(url: str) -> str:
 def load_found(directory: str, configured_url: str) -> Optional[Dict[str, Any]]:
     """service_address.json when it applies to `configured_url`, else None. It
     is ignored once mes_service_url is changed by hand (or the machine enrolled
-    again: enroll() removes it)."""
+    again: enroll() removes it), and when it names the configured address itself
+    (the service moved back)."""
     try:
         with open(os.path.join(directory, ADDRESS_FILE), encoding="utf-8") as f:
             doc = json.load(f)
@@ -165,13 +166,20 @@ def load_found(directory: str, configured_url: str) -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(doc, dict) or not isinstance(doc.get("url"), str):
         return None
-    if doc.get("configured_url") != _norm_url(configured_url):
+    if doc.get("configured_url") != _norm_url(configured_url) or doc["url"] == _norm_url(configured_url):
         return None
     try:
         split_url(doc["url"])
     except ValueError:
         return None
     return doc
+
+
+def forget_found(directory: str) -> None:
+    try:
+        os.remove(os.path.join(directory, ADDRESS_FILE))
+    except FileNotFoundError:
+        pass
 
 
 def save_found(directory: str, url: str, via: str, configured_url: str,
@@ -412,10 +420,7 @@ def enroll(url: str, code: str, machine_id: str, machine_name: str, directory: s
         _write_private(os.path.join(directory, CA_FILE), ca_pem.encode("ascii"))
         _write_private(os.path.join(directory, ENROLMENT_FILE),
                        json.dumps(enrolment, indent=2).encode("utf-8"))
-        try:                       # an address found for the old enrolment does not apply
-            os.remove(os.path.join(directory, ADDRESS_FILE))
-        except FileNotFoundError:
-            pass
+        forget_found(directory)    # an address found for the old enrolment does not apply
         return enrolment
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -684,7 +689,10 @@ class Forwarder(threading.Thread):
                 continue
             old, self.url, self.transport = self.url, url, transport
             try:
-                save_found(self.dir, url, via, self.configured_url, self.wall)
+                if url == self.configured_url:       # back where mes_service_url says
+                    forget_found(self.dir)
+                else:
+                    save_found(self.dir, url, via, self.configured_url, self.wall)
             except OSError as exc:
                 logger.error("MES: %s not saved (%s): it is looked for again after a restart",
                              ADDRESS_FILE, exc)

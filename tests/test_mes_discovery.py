@@ -215,6 +215,26 @@ class ForwarderLookTests(tf.ForwarderBase):
         self.assertEqual(self.made, [self.NEW])
         self.assertEqual(fw.status["state"], "ok")
 
+    def test_moving_back_to_the_configured_address_forgets_the_found_one(self):
+        self.test_looks_after_three_failures_and_switches()       # now on NEW, file saved
+        self.transports[self.NEW] = FlakyTransport()                # NEW gone, OLD answers again
+        self.transports[self.OLD] = self.svc
+        self.answers = [("192.168.0.104", 8443, "probe")]
+        self.add_cycles(1)
+        fw = self.fwd()
+        with self.assertLogs("agent_mes_forward", "WARNING") as logs:
+            for _ in range(4):
+                fw.step()
+        self.assertIn("MES service moved: %s -> %s (probe)" % (self.NEW, self.OLD), "\n".join(logs.output))
+        self.assertEqual(fw.url, self.OLD)
+        self.assertFalse(os.path.exists(self.found_file()))
+        self.assertTrue(mf.describe(self.dir, self.OLD).startswith(self.OLD + ", site "))
+
+    def test_found_file_naming_the_configured_address_is_ignored(self):
+        mf.save_found(self.dir, self.OLD, "probe", self.OLD)      # written by 1.8.0 after a move back
+        self.assertIsNone(mf.load_found(self.dir, self.OLD))
+        self.assertTrue(mf.describe(self.dir, self.OLD).startswith(self.OLD + ", site "))
+
     def test_config_changed_by_hand_wins_over_the_found_address(self):
         mf.save_found(self.dir, self.NEW, "probe", self.OLD)
         other = "https://10.0.0.9:8443"
