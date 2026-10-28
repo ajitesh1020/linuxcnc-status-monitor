@@ -321,7 +321,9 @@ forwarder thread only):
 - **Remember:** `mes/service_address.json` (0600, atomic) `{"url",
   "found_at_ms", "via", "configured_url"}`. `configured_url` (an addition to the
   design's keys) is the `mes_service_url` it replaces: the file is ignored once
-  `mes_service_url` is changed by hand, and `--mes-enroll` deletes it.
+  `mes_service_url` is changed by hand, and `--mes-enroll` deletes it. When the
+  service moves back to the configured address the file is deleted (and one
+  naming it is ignored).
   `config.yaml` is never written. `--check`: `site service  : https://B (found
   on the network by probe on <date>; configured https://A), site …`.
 - Key: `mes_discovery_port` (default `5007`, `0` = never look), the service's

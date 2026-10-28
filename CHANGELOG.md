@@ -6,6 +6,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--check` after the MES service moves back.** When the site service came
+  back to the address in `mes_service_url` (two-PC test 28 Oct: .104 -> .200 ->
+  .104), 1.8.0 saved that address as "found" and `--check` said
+  `https://192.168.0.104:8443 (found on the network ...; configured
+  https://192.168.0.104:8443)`. Forwarding was right. Now the agent forgets
+  `mes/service_address.json` when the address found is the configured one, and
+  ignores such a file left by 1.8.0.
+
 ## [1.8.0] - 2026-10-28
 
 ### Added

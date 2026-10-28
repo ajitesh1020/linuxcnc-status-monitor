@@ -20,7 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
-| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09 (see below) |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09, move back 14:18 (see below); `--check` fix after a move back on `fix/found-equals-configured` |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -285,6 +285,20 @@ became **192.168.0.200** (no longer answers at .104).
   `config.yaml` still .104; `--check`: `https://192.168.0.200:8443 (found on the network by probe on
   2026-10-28; configured https://192.168.0.104:8443)`.
 - Not checked from here: the Windows ledger rows (acked = the service gave a receipt).
+
+**Move-back test (28 Oct), passed.** The Windows PC got 192.168.0.104 back; the agent still used .200. The user
+logged out / in of MillWright and ran a program. 14:18:26 send to .200: `No route to host`, link offline;
+**14:18:33 `MES service moved: https://192.168.0.200:8443 -> https://192.168.0.104:8443 (probe)`** (7 s). Spool
+rows 157-163 (end of the 14:11 run, logout 14:18:05, login 14:18:27, run 14:18:48-14:20:27 with
+`cycle.observed` and `execution.ended`) all acked, queue 0. 14:20: probe answered by .104, `/v1/health` at .104
+= 200, .200 no route.
+
+Cosmetic bug found: 1.8.0 saved .104 as "found" (`configured_url` also .104), so `--check` said `https://
+192.168.0.104:8443 (found on the network by probe ...; configured https://192.168.0.104:8443)`. Fixed on
+branch `fix/found-equals-configured`: moving to the configured address deletes `service_address.json`;
+`load_found()` ignores a file naming the configured address (so the file left on OFC_PC is ignored). Two new
+tests; 290 pass. With the fix, `describe()` on OFC_PC's real files gives `https://192.168.0.104:8443, site
+cb6a4a6c…, certificate valid until 2027-10-28`. Takes effect on OFC_PC after the next release / install.
 
 Also: the Stop-after-last-M6 trace (11:22-12:02, `stop_after_m6.txt`) caught nothing: LinuxCNC was not
 running in that window. Still open.
