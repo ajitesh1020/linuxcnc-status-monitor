@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; `G28` fix checked on the machine; re-enrol fix merged).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; `G28` fix checked on the machine; re-enrol fix merged; v1.7.1 pre-release published).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -208,6 +208,16 @@ Agent #34 (merged, 759ac21): `AGENT_VERSION` 1.7.0 (user's choice), README, CHAN
 `version: 1.7.0`. Also merged: #33 (session log). ATC run of `LX052_drill_ATC.ngc` from the top (12:04-12:12,
 466.8 s, line 633 of 634): MillWright `execution.ended` and the agent's `cycle.observed` both `completed`,
 same `execution_id` (explicit), same operator session.
+
+## Version 1.7.1 (28 Oct)
+
+Agent #45 (merged by this session at the user's request): `AGENT_VERSION` 1.7.1 (user's choice), README,
+CHANGELOG `[1.7.1] - 2026-10-28` (re-enrol fix #43, `G28` #41, remap fixes #37-#39, unknown outcome on agent
+stop, temp-file cleanup). Tag `v1.7.1` pushed; CI built and published
+https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1.7.1 (`linuxcnc-status-agent_1.7.1_all.deb`,
+SHA-256 `1d5a2b38…b553`), marked **pre-release** (user's choice). Notes list the open items: Stop after the last
+M6, the one end-of-run stall, no NTP. 1.7.0 was never tagged. The released .deb (checksum checked) installed
+on OFC_PC by the user 11:16: `--version` 1.7.1, still enrolled (site `cb6a4a6c…`), link ok, queue 0.
 
 ## H impact runs (27 Oct)
 
