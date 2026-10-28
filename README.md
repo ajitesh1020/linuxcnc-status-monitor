@@ -8,7 +8,7 @@ not read the NML error channel (so the operator's screen keeps every message).
 It is a monitoring tool, not part of machine control or safety. Test it on
 your own machine (latency, GUI messages) before production use.
 
-**Version: 1.7.0**
+**Version: 1.7.1**
 
 ---
 
