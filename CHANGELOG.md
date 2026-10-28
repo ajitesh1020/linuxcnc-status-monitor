@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Re-enrolling with another site no longer loses waiting events.** Events
+  waiting in the MES spool carry the site they were made under; a service of
+  another site rejects them as `site_mismatch`, which is final. `--mes-enroll`
+  now asks the new service its site (`GET /v1/health`, over TLS trusting only
+  the checked CA) before sending the code. If events for another site are
+  waiting it stops, says how many, and the code stays valid: send them first
+  (run the old service until `--mes-status` shows the queue empty) or enrol
+  with the new `--discard-waiting`, which marks them `dropped` with a reason
+  (never sent). MillWright's events (no site) are not affected. Also refused:
+  an answer naming another site than `/v1/health` did. The spool gets a
+  `reason` column (added to existing spools on open) and the state `dropped`.
+
 - **A bare `G28` / `G30` is a move.** A program ending `G00 Z20` (already at
   Z20, so LinuxCNC never shows it), `G28`, `M30` was logged as aborted at 99 %
   although it ran to the end (`SJ-942_Cutting1_2.NC`, two-PC J test 28 Oct;

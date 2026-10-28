@@ -16,6 +16,10 @@ Enrolment, once per machine (`lcnc-status-agent --mes-enroll URL CODE`):
   1. fetch the site CA without verification and STOP unless its SHA-256
      fingerprint starts with the code's last 16 hex digits — nothing secret is
      sent before this check;
+  1b. ask the service its site (GET /v1/health over TLS that trusts only that
+     CA); events waiting in the spool for ANOTHER site would be rejected for
+     good there, so enrolment refuses (code not sent) unless they are drained
+     first or discarded on purpose (--discard-waiting; waiting_guard);
   2. make a key and CSR with the `openssl` command (EC P-256);
   3. send code + CSR + machine_uuid over TLS that trusts only that CA;
   4. keep in ~/linuxcnc-monitor-agent/mes/ (0700; files 0600): client.key,
@@ -183,6 +187,73 @@ def fetch_ca(host: str, port: int, timeout: float = TIMEOUT_S) -> str:
     return pem
 
 
+def fetch_site(host: str, port: int, ca_file: str, timeout: float = TIMEOUT_S) -> Optional[str]:
+    """Step 1b: the service's site id from GET /v1/health over TLS that trusts
+    only the checked CA. None when it cannot be asked or does not say."""
+    ctx = ssl.create_default_context(cafile=ca_file)
+    ctx.check_hostname = True
+    conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+    try:
+        conn.request("GET", "/v1/health")
+        resp = conn.getresponse()
+        raw = resp.read()
+    except (OSError, ssl.SSLError, http.client.HTTPException):
+        return None
+    finally:
+        conn.close()
+    if resp.status != 200:
+        return None
+    try:
+        site = json.loads(raw.decode("utf-8")).get("site_id")
+    except (UnicodeDecodeError, ValueError, AttributeError):
+        return None
+    return site if isinstance(site, str) and UUID4_RE.match(site) else None
+
+
+def waiting_guard(spool_path: str, discard: bool, out: Callable[[str], None] = print
+                  ) -> Callable[[Optional[str]], None]:
+    """The check enroll() runs once it knows the new site, before the code is
+    sent. Events waiting in the spool stamped with another site would be
+    rejected by the new service as site_mismatch, which is final: refuse, or
+    with `discard` mark them dropped (never sent). MillWright events (site
+    null) and events for the same site are not affected."""
+    import agent_mes_spool  # here: the CLI path only
+
+    def check(site: Optional[str]) -> None:
+        try:
+            waiting = agent_mes_spool.waiting_for_other_site(spool_path, site)
+        except Exception as exc:
+            raise EnrolError("cannot read the MES spool %s (%s): nothing was sent" % (spool_path, exc))
+        if not waiting:
+            return
+        n = sum(waiting.values())
+        olds = ", ".join(sorted(waiting))
+        if site is None:
+            why = ("the service does not say which site it belongs to (GET /v1/health), so "
+                   "they may be rejected for good there")
+        else:
+            why = ("the new service belongs to site %s and would reject them for good "
+                   "(site_mismatch)" % site)
+        if not discard:
+            raise EnrolError(
+                "%d event(s) recorded on this machine are waiting to be sent to site %s;\n"
+                "  %s.\n"
+                "  Nothing was sent: the code is still valid. Either\n"
+                "  - send them first: run the old site service until 'lcnc-status-agent "
+                "--mes-status' shows the queue empty, then enrol again; or\n"
+                "  - discard them: enrol again with --discard-waiting (they are marked "
+                "dropped and never sent)." % (n, olds, why))
+        reason = "discarded at re-enrolment (--discard-waiting): stamped for site %s, new site %s" % (
+            olds, site or "unknown")
+        try:
+            dropped = agent_mes_spool.drop_waiting_for_other_site(spool_path, site, reason)
+        except Exception as exc:
+            raise EnrolError("the waiting events could not be discarded (%s): nothing was sent" % exc)
+        out("Discarded %d waiting event(s) for site %s: marked dropped in the spool, never sent."
+            % (dropped, olds))
+    return check
+
+
 def make_csr(workdir: str, openssl: str = "openssl") -> Tuple[bytes, bytes]:
     """Step 2: (key PEM, CSR PEM) from the openssl command."""
     exe = shutil.which(openssl)
@@ -229,10 +300,14 @@ def post_enroll(host: str, port: int, ca_file: str, body: Dict[str, Any],
 def enroll(url: str, code: str, machine_id: str, machine_name: str, directory: str,
            get_ca: Callable[[str, int], str] = fetch_ca,
            csr_maker: Callable[[str], Tuple[bytes, bytes]] = make_csr,
-           poster: Callable[[str, int, str, Dict[str, Any]], Tuple[int, Dict[str, Any]]] = post_enroll
+           poster: Callable[[str, int, str, Dict[str, Any]], Tuple[int, Dict[str, Any]]] = post_enroll,
+           site_getter: Callable[[str, int, str], Optional[str]] = fetch_site,
+           before_send: Optional[Callable[[Optional[str]], None]] = None
            ) -> Dict[str, Any]:
     """Enrol this machine; returns the enrolment.json content. Raises EnrolError
-    and leaves the files of an earlier enrolment untouched on any failure."""
+    and leaves the files of an earlier enrolment untouched on any failure.
+    `before_send(site or None)` runs after the CA check, before the code is
+    sent; it may raise EnrolError (see waiting_guard)."""
     try:
         host, port = split_url(url)
     except ValueError as exc:
@@ -260,6 +335,9 @@ def enroll(url: str, code: str, machine_id: str, machine_name: str, directory: s
         ca_file = os.path.join(work, CA_FILE)
         with open(ca_file, "w", encoding="ascii") as f:
             f.write(ca_pem)
+        checked_site = site_getter(host, port, ca_file)
+        if before_send is not None:
+            before_send(checked_site)
         key_pem, csr_pem = csr_maker(work)
         try:
             status, doc = poster(host, port, ca_file, {
@@ -278,6 +356,9 @@ def enroll(url: str, code: str, machine_id: str, machine_name: str, directory: s
             raise EnrolError("the service's answer is incomplete")
         if isinstance(doc.get("ca"), str) and ca_fingerprint(doc["ca"]) != fp:
             raise EnrolError("the service answered with another CA than the one checked")
+        if checked_site is not None and site != checked_site:
+            raise EnrolError("the service enrolled this machine in site %s but said it is site %s; "
+                             "files not written" % (site, checked_site))
         enrolment = {"service_url": url.strip().rstrip("/"), "site_id": site, "machine_id": mid,
                      "not_after": doc.get("not_after")}
         _write_private(os.path.join(directory, KEY_FILE), key_pem)

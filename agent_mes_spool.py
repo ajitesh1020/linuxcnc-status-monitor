@@ -18,9 +18,11 @@ Storage — ~/linuxcnc-monitor-agent/mes_spool.db (SQLite, WAL, synchronous=FULL
 
   meta(key, value)        producer_id, epoch, machine_id, site_id (no row
                           until enrolment), producer_seq (last agent seq)
-  spool(seq, event_id, type, occurred_at, body, state, attempts, acked_at)
+  spool(seq, event_id, type, occurred_at, body, state, attempts, acked_at, reason)
                           body = validate.encode(event), sent unchanged;
-                          state pending | acked; occurred_at / acked_at in ms
+                          state pending | acked | dropped; occurred_at /
+                          acked_at (time acked or dropped) in ms; reason
+                          only for dropped rows
   cursors(source, epoch, position)
                           how far another producer's store was read (e.g.
                           MillWright's outbox); advanced in the SAME
@@ -39,6 +41,12 @@ Budget: `mes_spool_mb` (default 1024) of disk for the database files. Over
 caller keeps the events where they are (MillWright's outbox is not advanced)
 or rejects the scan visibly. Nothing is ever dropped silently. Acked rows are
 pruned after 7 days; pending rows never.
+
+Dropped: only on the operator's explicit request. `--mes-enroll ...
+--discard-waiting` marks pending events stamped with another site's id
+(which the new site would reject for good) `dropped` with a reason, before the
+code is sent (drop_waiting_for_other_site). They are never sent and are pruned
+like acked rows.
 
 Only MES worker threads use this; the sampling loop reads `stats` (a dict
 replaced atomically) and nothing else.
@@ -62,7 +70,7 @@ CREATE TABLE IF NOT EXISTS meta    (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS spool   (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
                                     type TEXT NOT NULL, occurred_at INTEGER NOT NULL, body TEXT NOT NULL,
                                     state TEXT NOT NULL DEFAULT 'pending',
-                                    attempts INTEGER NOT NULL DEFAULT 0, acked_at INTEGER);
+                                    attempts INTEGER NOT NULL DEFAULT 0, acked_at INTEGER, reason TEXT);
 CREATE TABLE IF NOT EXISTS cursors (source TEXT PRIMARY KEY, epoch TEXT, position INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_spool_state ON spool (state, seq);
 """
@@ -72,6 +80,12 @@ WARN_AT = 0.9
 ACKED_KEEP_S = 7 * 86400
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CONTRACT_DIR = os.path.join(_HERE, "contracts", "mes", "v1")
+
+
+def _add_reason_column(db: sqlite3.Connection) -> None:
+    """Older spools have no `reason` column."""
+    if "reason" not in [c[1] for c in db.execute("PRAGMA table_info(spool)")]:
+        db.execute("ALTER TABLE spool ADD COLUMN reason TEXT")
 
 
 class SpoolFull(Exception):
@@ -137,6 +151,7 @@ class Spool:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript(SCHEMA)
+        _add_reason_column(self._db)
         self._open_epoch(machine_id)
         self.stats: Dict[str, Any] = {}
         self._refresh()
@@ -371,10 +386,10 @@ class Spool:
             self._refresh()
 
     def prune(self) -> int:
-        """Delete acked rows older than 7 days. Pending rows are never deleted."""
+        """Delete acked and dropped rows older than 7 days. Pending rows are never deleted."""
         cutoff = int((self.now() - ACKED_KEEP_S) * 1000)
         with self._lock:
-            n = self._db.execute("DELETE FROM spool WHERE state='acked' AND acked_at < ?",
+            n = self._db.execute("DELETE FROM spool WHERE state IN ('acked', 'dropped') AND acked_at < ?",
                                  (cutoff,)).rowcount
             self._refresh()
         return n
@@ -382,6 +397,65 @@ class Spool:
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+
+# ---------------------------------------------------------------------------
+# Re-enrolment with another site (used by --mes-enroll, beside a running agent)
+# ---------------------------------------------------------------------------
+# These open the database directly, not through Spool: the agent may be running
+# and owns the epoch / sidecar. SQLite's locking keeps the two apart.
+def _other_site_rows(db: sqlite3.Connection, site_id: Optional[str]) -> List[Tuple[int, str]]:
+    """(seq, site) of pending rows stamped with a site other than `site_id`
+    (None: with any site). Rows with site_id null (MillWright's) are not."""
+    out = []
+    for seq, body in db.execute("SELECT seq, body FROM spool WHERE state='pending' ORDER BY seq"):
+        try:
+            site = json.loads(body).get("site_id")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(site, str) and site and site != site_id:
+            out.append((seq, site))
+    return out
+
+
+def waiting_for_other_site(path: str, site_id: Optional[str]) -> Dict[str, int]:
+    """{old site: count} of events waiting to be sent that a service of
+    `site_id` would reject (site_mismatch). {} when there is no spool."""
+    if not os.path.exists(path):
+        return {}
+    db = sqlite3.connect(path, timeout=30.0)
+    try:
+        counts: Dict[str, int] = {}
+        for _, site in _other_site_rows(db, site_id):
+            counts[site] = counts.get(site, 0) + 1
+        return counts
+    finally:
+        db.close()
+
+
+def drop_waiting_for_other_site(path: str, site_id: Optional[str], reason: str,
+                                now=time.time) -> int:
+    """Mark those events `dropped` with `reason` (one transaction); returns how many."""
+    if not os.path.exists(path):
+        return 0
+    db = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    try:
+        _add_reason_column(db)
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            seqs = [seq for seq, _ in _other_site_rows(db, site_id)]
+            now_ms = int(now() * 1000)
+            n = 0
+            for seq in seqs:
+                n += db.execute("UPDATE spool SET state='dropped', acked_at=?, reason=? "
+                                "WHERE seq=? AND state='pending'", (now_ms, reason, seq)).rowcount
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        return n
+    finally:
+        db.close()
 
 
 def status_off() -> Dict[str, Any]:

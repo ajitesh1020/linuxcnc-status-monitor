@@ -86,20 +86,65 @@ class EnrolTests(unittest.TestCase):
         self.ca_pem, self.fp = self_signed(self.tmp.name)
         self.dir = os.path.join(self.tmp.name, "agent", "mes")
         self.posted = []
+        self.site = SITE            # what GET /v1/health says
+        self.order = []
 
     def poster(self, status=200, doc=None):
         def post(host, port, ca_file, body):
             with open(ca_file, encoding="ascii") as f:
                 self.assertEqual(f.read(), self.ca_pem)        # trusts only the checked CA
             self.posted.append(body)
+            self.order.append("post")
             return status, doc if doc is not None else {
                 "machine_id": body["machine_id"], "site_id": SITE, "certificate": self.ca_pem,
                 "ca": self.ca_pem, "not_after": 1_900_000_000_000}
         return post
 
-    def enroll(self, code, poster=None, machine=MACHINE):
+    def site_getter(self, host, port, ca_file):
+        with open(ca_file, encoding="ascii") as f:
+            self.assertEqual(f.read(), self.ca_pem)            # asked over TLS trusting only the checked CA
+        self.order.append("site")
+        return self.site
+
+    def enroll(self, code, poster=None, machine=MACHINE, before_send=None):
         return mf.enroll("https://127.0.0.1:8443", code, machine, "VMC-01", self.dir,
-                         get_ca=lambda h, p: self.ca_pem, poster=poster or self.poster())
+                         get_ca=lambda h, p: self.ca_pem, poster=poster or self.poster(),
+                         site_getter=self.site_getter, before_send=before_send)
+
+    def test_site_is_checked_before_the_code_is_sent(self):
+        seen = []
+        self.enroll(code_for(self.fp), before_send=lambda site: (seen.append(site), self.order.append("guard")))
+        self.assertEqual(seen, [SITE])
+        self.assertEqual(self.order, ["site", "guard", "post"])
+
+    def test_guard_refusal_sends_nothing_and_keeps_files(self):
+        self.enroll(code_for(self.fp))
+        with open(os.path.join(self.dir, mf.ENROLMENT_FILE), "rb") as f:
+            before = f.read()
+        self.posted.clear()
+
+        def refuse(site):
+            raise mf.EnrolError("no")
+        with self.assertRaises(mf.EnrolError):
+            self.enroll(code_for(self.fp), before_send=refuse)
+        self.assertEqual(self.posted, [])
+        with open(os.path.join(self.dir, mf.ENROLMENT_FILE), "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertEqual(sorted(os.listdir(self.dir)), sorted([mf.KEY_FILE, mf.CERT_FILE, mf.CA_FILE,
+                                                               mf.ENROLMENT_FILE]))
+
+    def test_answer_for_another_site_than_health_said_is_refused(self):
+        self.site = "cb6a4a6c-7625-4042-8f42-b4f28b7bb75d"
+        with self.assertRaises(mf.EnrolError) as cm:
+            self.enroll(code_for(self.fp))
+        self.assertIn("said it is site", str(cm.exception))
+        self.assertIsNone(mf.load_enrolment(self.dir))
+
+    def test_service_that_does_not_say_its_site_still_enrols(self):
+        self.site = None
+        seen = []
+        self.assertEqual(self.enroll(code_for(self.fp), before_send=seen.append)["site_id"], SITE)
+        self.assertEqual(seen, [None])
 
     def test_wrong_fingerprint_stops_before_anything_is_sent(self):
         other = ("0" if self.fp[0] != "0" else "1") + self.fp[1:16]
@@ -167,6 +212,70 @@ class EnrolTests(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Forwarder against a fake service
 # ---------------------------------------------------------------------------
+OLD_SITE = "7844c24c-f48b-4f71-b0e9-a18edf34e157"
+
+
+class WaitingGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "mes_spool.db")
+        self.spool = ms.Spool(self.path, MACHINE, "4f1c2a9e7b3d5c60", "1.7.0")
+        self.addCleanup(self.spool.close)
+        self.out = []
+
+    def own(self, n):
+        for i in range(n):
+            f = cycle_fact(i)
+            self.spool.add("cycle.observed", ml.cycle_payload(f), f["ended"], {"execution_id": f["execution_id"]})
+
+    def guard(self, discard=False):
+        return mf.waiting_guard(self.path, discard, out=self.out.append)
+
+    def states(self):
+        return [r[0] for r in self.spool._db.execute("SELECT state FROM spool ORDER BY seq")]
+
+    def test_nothing_waiting_or_same_site_or_millwright_only(self):
+        self.guard()(SITE)                                       # empty spool
+        self.spool.append([mw_event(1, EP)])                     # site null: accepted anywhere
+        self.guard()(SITE)
+        self.spool.set_site_id(SITE)
+        self.own(2)
+        self.guard()(SITE)                                       # same site
+        self.assertEqual(self.out, [])
+        self.assertEqual(self.states(), ["pending"] * 3)
+
+    def test_other_site_refuses_and_says_how(self):
+        self.spool.set_site_id(OLD_SITE)
+        self.own(3)
+        with self.assertRaises(mf.EnrolError) as cm:
+            self.guard()(SITE)
+        msg = str(cm.exception)
+        for part in ("3 event(s)", OLD_SITE, SITE, "site_mismatch", "Nothing was sent", "--mes-status",
+                     "--discard-waiting"):
+            self.assertIn(part, msg)
+        self.assertEqual(self.states(), ["pending"] * 3)       # untouched
+
+    def test_unknown_new_site_refuses_too(self):
+        self.spool.set_site_id(OLD_SITE)
+        self.own(1)
+        with self.assertRaises(mf.EnrolError) as cm:
+            self.guard()(None)
+        self.assertIn("does not say which site", str(cm.exception))
+
+    def test_discard_drops_only_the_other_sites_events(self):
+        self.spool.append([mw_event(1, EP)])
+        self.spool.set_site_id(OLD_SITE)
+        self.own(2)
+        self.guard(discard=True)(SITE)
+        self.assertEqual(self.states(), ["pending", "dropped", "dropped"])
+        reason = self.spool._db.execute("SELECT reason FROM spool WHERE seq=2").fetchone()[0]
+        self.assertIn(OLD_SITE, reason)
+        self.assertIn(SITE, reason)
+        self.assertEqual(len(self.out), 1)
+        self.assertIn("Discarded 2", self.out[0])
+
+
 class FakeService:
     """Speaks the API: capabilities, events with receipts, dedup by event_id."""
 
@@ -660,6 +769,40 @@ class RealServiceTests(unittest.TestCase):
         self.drain(fw)
         self.assertEqual(fw.status["state"], "ok")
         self.assertEqual(self.pending(), 0)
+
+    def test_health_tells_the_site_over_the_checked_ca(self):
+        host, port = mf.split_url(self.url)
+        ca = os.path.join(self.t.name, "ca.pem")
+        with open(ca, "w") as f:
+            f.write(mf.fetch_ca(host, port))
+        site = mf.fetch_site(host, port, ca)
+        self.assertTrue(site and mf.UUID4_RE.match(site), site)
+        self.assertIsNone(mf.fetch_site(host, _free_port(), ca))    # nothing listening
+
+    def test_re_enrol_with_waiting_events_of_another_site(self):
+        """Events stamped for an earlier site: refused, code unused; then
+        --discard-waiting enrols with the same code and they are never sent."""
+        self.spool.set_site_id(OLD_SITE)
+        self.add_cycles(3)
+        self.spool.append([mw_event(1, str(uuid.uuid4()))])          # MillWright, site null
+        code = self.new_code()
+        guard = mf.waiting_guard(self.spool.path, False, out=lambda m: None)
+        with self.assertRaises(mf.EnrolError) as cm:
+            mf.enroll(self.url, code, self.machine, "TEST", self.dir, before_send=guard)
+        self.assertIn("3 event(s)", str(cm.exception))
+        self.assertIsNone(mf.load_enrolment(self.dir))
+        out = []
+        doc = mf.enroll(self.url, code, self.machine, "TEST", self.dir,          # same code: not used before
+                        before_send=mf.waiting_guard(self.spool.path, True, out=out.append))
+        self.assertIn("Discarded 3", out[0])
+        self.assertEqual(self.pending(), 1)
+        fw = mf.Forwarder(self.spool, self.url, self.dir, self.machine)
+        self.drain(fw)
+        self.assertEqual(fw.status["state"], "ok", fw.status)
+        self.assertEqual(self.pending(), 0)
+        self.assertEqual(fw.sent["stored"], 1)                      # only the MillWright event
+        self.assertEqual(fw.sent["rejected"], 0)
+        self.assertEqual(self.spool.site_id, doc["site_id"])
 
     def test_capabilities_limits_are_used(self):
         self.enroll()
