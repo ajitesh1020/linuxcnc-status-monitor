@@ -20,7 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
-| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09, move back 14:18 (see below); `--check` fix after a move back on `fix/found-equals-configured` |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09, move back 14:18 (see below); `--check` fix after a move back: agent #51, in **1.8.1** |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -298,7 +298,7 @@ Cosmetic bug found: 1.8.0 saved .104 as "found" (`configured_url` also .104), so
 branch `fix/found-equals-configured`: moving to the configured address deletes `service_address.json`;
 `load_found()` ignores a file naming the configured address (so the file left on OFC_PC is ignored). Two new
 tests; 290 pass. With the fix, `describe()` on OFC_PC's real files gives `https://192.168.0.104:8443, site
-cb6a4a6c…, certificate valid until 2027-10-28`. Takes effect on OFC_PC after the next release / install.
+cb6a4a6c…, certificate valid until 2027-10-28`. Released in 1.8.1; takes effect on OFC_PC once it is installed.
 
 Also: the Stop-after-last-M6 trace (11:22-12:02, `stop_after_m6.txt`) caught nothing: LinuxCNC was not
 running in that window. Still open.
@@ -312,6 +312,16 @@ published https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1
 added notes: package K, and what is still open (Windows check after an address change, Stop after the last
 M6, the one stall, no NTP). Downloaded .deb checked: checksum OK, holds `agent_mes_discovery.py`,
 `AGENT_VERSION` 1.8.0. Not installed on OFC_PC yet (the user does that).
+
+## Version 1.8.1 (28 Oct)
+
+At the user's request this session merged agent #51 (`--check` after the service moves back) and #52
+(`AGENT_VERSION` 1.8.1, README, CHANGELOG `[1.8.1] - 2026-10-28`; 290 tests pass). Tag `v1.8.1` on 6393131; CI
+(deb + publish) passed: https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1.8.1
+(`linuxcnc-status-agent_1.8.1_all.deb`, SHA-256 `90881ad9…08d7`), marked **pre-release** with notes (K passed
+both ways; open: Stop after the last M6, the one stall, no NTP). Downloaded .deb checked (checksum OK,
+`AGENT_VERSION` 1.8.1, holds `forget_found`) and copied to `dist/` with its `SHA256SUMS`. Not installed on
+OFC_PC yet (the user does that).
 
 ## H impact runs (27 Oct)
 
