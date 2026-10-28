@@ -20,7 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
-| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 (open) | Built 28 Oct; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **to do** (see below) |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **to do** (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -269,7 +269,7 @@ Built from FloorWatch `main` `docs/MES_SERVICE_DISCOVERY.md` section 2 (the prom
   5 s, `site_id cb6a4a6c…`, `ca_sha256 add2f98b…` = this PC's pinned CA; the new `Finder` with the real
   enrolment returns `[("192.168.0.104", 8443, "probe")]`.
 
-**Windows check (to do):** needs the K build installed on OFC_PC (agent #47 merged, a .deb), then the Windows PC
+**Windows check (to do):** needs 1.8.0 installed on OFC_PC, then the Windows PC
 restarted with a new address (if the router gives .104 again: a temporary static address on Windows). Expect
 within 30 s the service's certificate names the new address; at the agent's next failed send
 `MES service moved: https://192.168.0.104:8443 -> https://<new>:8443 (probe)`; queue drains; `--check` shows
@@ -277,6 +277,16 @@ both. `mes_service_url` stays .104.
 
 Also: the Stop-after-last-M6 trace (11:22-12:02, `stop_after_m6.txt`) caught nothing: LinuxCNC was not
 running in that window. Still open.
+
+## Version 1.8.0 (28 Oct)
+
+At the user's request this session merged agent #47 (package K) and #48 (`AGENT_VERSION` 1.8.0, README,
+CHANGELOG `[1.8.0] - 2026-10-28`; 288 tests pass). Tag `v1.8.0` on a67614c; CI (deb + publish) passed and
+published https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1.8.0
+(`linuxcnc-status-agent_1.8.0_all.deb`, SHA-256 `22b48131…7b9e`). This session marked it **pre-release** and
+added notes: package K, and what is still open (Windows check after an address change, Stop after the last
+M6, the one stall, no NTP). Downloaded .deb checked: checksum OK, holds `agent_mes_discovery.py`,
+`AGENT_VERSION` 1.8.0. Not installed on OFC_PC yet (the user does that).
 
 ## H impact runs (27 Oct)
 
@@ -405,7 +415,7 @@ avoided it only by draining by hand first. Options:
 2. (Done 28 Oct) Two-PC J test; `G28` fix (agent #41) installed and checked. Watch for the
    `WAITING_FOR_IO` stall at the end of a run (seen once, 10:29); if it happens, note the AXIS message.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
-3b. **Package K Windows check:** install the K build, then restart the Windows PC so it gets a new address
+3b. **Package K Windows check:** install 1.8.0 (`sudo dpkg -i linuxcnc-status-agent_1.8.0_all.deb`), then restart the Windows PC so it gets a new address
    (or set a temporary static one), and tell me the new address.
 4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
