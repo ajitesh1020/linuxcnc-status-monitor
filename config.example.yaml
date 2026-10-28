@@ -95,6 +95,11 @@ mes_millwright_config: ""   # LinuxCNC config folder with MillWright's mw_data/ 
 #   lcnc-status-agent --mes-enroll https://<service>:8443 <code>
 # (with your OK). "" = not enrolled: events stay in the spool.
 mes_service_url: ""
+# When the service's PC gets a new address, the agent finds it again on the
+# LAN (UDP port below; the service announces itself there) and remembers it in
+# ~/linuxcnc-monitor-agent/mes/service_address.json; mes_service_url is left
+# as written. 0 = never look.
+mes_discovery_port: 5007
 
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen

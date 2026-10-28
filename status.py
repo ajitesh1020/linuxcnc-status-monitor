@@ -126,6 +126,7 @@ from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
 import agent_mes_spool
 import agent_mes_link
+import agent_mes_discovery
 import agent_mes_forward
 import agent_mes_status
 import queue
@@ -175,6 +176,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mes_spool_mb":              1024.0,          # disk budget of the MES spool (~/linuxcnc-monitor-agent/mes_spool.db)
     "mes_millwright_config":     "",              # LinuxCNC config dir holding MillWright's mw_data/ ("" = no MillWright)
     "mes_service_url":           "",              # site service, e.g. https://10.0.0.5:8443 ("" = not enrolled: nothing forwarded)
+    "mes_discovery_port":        5007,            # UDP port to find the service on after it moves (0 = never look)
 }
 
 JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
@@ -907,7 +909,8 @@ def main() -> None:
         agent_mes_status.status_path(USER_CONFIG_DIR),
         os.path.join(USER_CONFIG_DIR, "mes_spool.producer.json"),
         *[os.path.join(_mes_dir, n) for n in (agent_mes_forward.KEY_FILE, agent_mes_forward.CERT_FILE,
-                                              agent_mes_forward.CA_FILE, agent_mes_forward.ENROLMENT_FILE)],
+                                              agent_mes_forward.CA_FILE, agent_mes_forward.ENROLMENT_FILE,
+                                              agent_mes_forward.ADDRESS_FILE)],
         os.path.join(_mw_data, agent_mes_link.ACK_FILE) if _mw_data else "",
     ])
     calculator    = CycleTimeCalculator(dev_mode=dev_mode)
@@ -1020,8 +1023,15 @@ def main() -> None:
     # loop only copies its status dict into packets.
     mes_forwarder = None
     if mes_spool:
+        # Finds the service again after its address changes (agent package K).
+        finder = None
+        if cfg["mes_discovery_port"] > 0:
+            finder = agent_mes_discovery.Finder(
+                cfg["mes_discovery_port"],
+                agent_mes_discovery.lan_targets(cfg["monitor_interface"], cfg["exclude_interfaces"]))
         mes_forwarder = agent_mes_forward.Forwarder(
-            mes_spool, cfg["mes_service_url"], agent_mes_forward.mes_dir(USER_CONFIG_DIR), machine_uuid)
+            mes_spool, cfg["mes_service_url"], agent_mes_forward.mes_dir(USER_CONFIG_DIR), machine_uuid,
+            finder=finder)
         mes_forwarder.start()
     # Operator readout (agent_mes_status.py, MES plan P2.6): own thread writes
     # mes_status.json from the status dicts above; no I/O in the loop.

@@ -6,6 +6,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The agent follows the MES site service to a new address** (package K;
+  FloorWatch `docs/MES_SERVICE_DISCOVERY.md`). Shop PCs get their address from
+  the router and it can change after a restart. After 3 connection failures in
+  a row (never on `401` / `403`) the forwarder probes on UDP 5007 on the
+  interfaces the status packets use (`monitor_interface` respected, Mesa
+  interfaces skipped) and listens for the service's announcements. It accepts
+  only messages naming this machine's site and the SHA-256 of its pinned site
+  CA, uses the datagram's source address, and switches only after the normal
+  TLS check and `GET /v1/capabilities` = 200 there; log line `MES service
+  moved: A -> B (probe)`. The address is kept in
+  `~/linuxcnc-monitor-agent/mes/service_address.json` (0600) and used after
+  restarts; `config.yaml` is not changed, `--check` shows both. The file is
+  ignored once `mes_service_url` is changed by hand and removed by
+  `--mes-enroll`. New key `mes_discovery_port` (default 5007, 0 = off).
+
 ## [1.7.1] - 2026-10-28
 
 ### Fixed

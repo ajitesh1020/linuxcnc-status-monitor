@@ -67,11 +67,10 @@ def mesa_interfaces(arp_text: str) -> Set[str]:
     return found
 
 
-def broadcast_addresses(ip_addr_json: list, exclude: Iterable[str]) -> List[Tuple[str, str]]:
-    """[(interface, broadcast address)] for usable IPv4 LAN interfaces."""
+def broadcast_sources(ip_addr_json: list, exclude: Iterable[str]) -> List[Tuple[str, str, str]]:
+    """[(interface, own address, broadcast address)] for usable IPv4 LAN interfaces."""
     skip = set(exclude)
-    out: List[Tuple[str, str]] = []
-    seen: Set[str] = set()
+    out: List[Tuple[str, str, str]] = []
     for iface in ip_addr_json or []:
         name = iface.get("ifname", "")
         flags = set(iface.get("flags") or [])
@@ -85,14 +84,34 @@ def broadcast_addresses(ip_addr_json: list, exclude: Iterable[str]) -> List[Tupl
                 prefix = int(a.get("prefixlen", 32))
                 if prefix >= 31:
                     continue
+                local = str(ipaddress.IPv4Address(a["local"]))
                 bcast = a.get("broadcast") or str(ipaddress.IPv4Network(
-                    f"{a['local']}/{prefix}", strict=False).broadcast_address)
+                    f"{local}/{prefix}", strict=False).broadcast_address)
             except (KeyError, ValueError):
                 continue
-            if bcast not in seen:
-                seen.add(bcast)
-                out.append((name, bcast))
+            out.append((name, local, bcast))
     return out
+
+
+def broadcast_addresses(ip_addr_json: list, exclude: Iterable[str]) -> List[Tuple[str, str]]:
+    """[(interface, broadcast address)] for usable IPv4 LAN interfaces."""
+    out: List[Tuple[str, str]] = []
+    seen: Set[str] = set()
+    for name, _, bcast in broadcast_sources(ip_addr_json, exclude):
+        if bcast not in seen:
+            seen.add(bcast)
+            out.append((name, bcast))
+    return out
+
+
+def list_broadcast_sources(exclude: Iterable[str]) -> List[Tuple[str, str, str]]:
+    """broadcast_sources() of this PC now, Mesa interfaces skipped; [] when
+    the interfaces cannot be listed."""
+    skip = set(exclude) | mesa_interfaces(_read("/proc/net/arp"))
+    try:
+        return broadcast_sources(_ip_json(["-4", "addr", "show", "up"]), skip)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
 
 
 def _read(path: str) -> str:
