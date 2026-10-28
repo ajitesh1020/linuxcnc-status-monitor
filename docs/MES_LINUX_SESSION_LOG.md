@@ -276,7 +276,7 @@ motion: already at Z20, so LinuxCNC never shows it), `M5`, `G28` (188), `M30` (1
 last move; since agent #38 it also drops motion lines that are not moves of the program, so 188 was ignored and
 the last move kept was 183 → aborted at 99 % (both SJ-942 runs on 28 Oct; MillWright: completed). On 26 Oct,
 before #38, 188 still counted. Fix: `G28` / `G30` count as moves (`G28.1` / `G30.1` still do not); branch
-`fix/g28-is-a-move` (f77cd15; 246 tests pass, 5 skip; new scan test and two end-to-end tests). Not pushed yet.
+`fix/g28-is-a-move` (f77cd15; 246 tests pass, 5 skip; new scan test and two end-to-end tests): agent #41.
 
 **Found, not fixed yet: re-enrolling with a different site while the agent's own events wait loses them.**
 Waiting events carry the old `site_id`; the new service rejects them as `site_mismatch`, which is final (the
@@ -307,7 +307,7 @@ avoided it only by draining by hand first. Options:
 
 1. (Done 27-28 Oct) ATC pick/drop check run again: `atc_check` logged (see below and the two-PC test).
    Still open: a trace of a Stop after the last M6 (15:48 case below).
-2. (Done 28 Oct) Two-PC J test. Still to do: OK to push `fix/g28-is-a-move`; after merge, install the
+2. (Done 28 Oct) Two-PC J test. Still to do: merge agent #41 (`G28`); then install the
    .deb and run SJ-942 to the end (agent should say completed). Optional: `floorwatch-service status`
    should now show 13 events.
 3. **Package I:** say when the scanners are bought (plan §16 D1).
