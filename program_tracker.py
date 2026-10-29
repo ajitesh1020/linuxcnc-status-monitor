@@ -303,6 +303,44 @@ class ProgramFile:
 SUB_LINES_MAX = 5000
 
 
+class MacroMoves:
+    """Move lines of subroutine / remap files (rack_change.ngc), read once per
+    file version. Right after an M6 remap LinuxCNC is back in the program while
+    motion still runs the remap's last moves, with the remap's line numbers;
+    at 10 Hz some of them are never seen while stat.file names the remap.
+    Files over MAX_BYTES are not read here (sampling loop): unknown = empty."""
+
+    MAX_BYTES = 256 * 1024
+    MAX_FILES = 32
+
+    def __init__(self) -> None:
+        self._cache: dict = {}
+
+    def lines(self, path: str) -> frozenset:
+        if not path:
+            return frozenset()
+        try:
+            st = os.stat(path)
+        except OSError:
+            return frozenset()
+        sig = (st.st_mtime, st.st_size)
+        hit = self._cache.get(path)
+        if hit is not None and hit[0] == sig:
+            return hit[1]
+        moves = frozenset()
+        if st.st_size <= self.MAX_BYTES:
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    mask = ProgramInfo.from_lines(f).motion_mask
+                moves = frozenset(i + 1 for i, b in enumerate(mask) if b)
+            except OSError:
+                pass
+        if len(self._cache) >= self.MAX_FILES:
+            self._cache.clear()
+        self._cache[path] = (sig, moves)
+        return moves
+
+
 class CycleLineTracker:
     """Per-cycle line bookkeeping. Call begin() at cycle start with the line
     numbers seen while idle, then sample() every tick."""
@@ -323,25 +361,40 @@ class CycleLineTracker:
         # motion line seen was theirs, and whether the interpreter read the
         # program's M2/M30 (read_line, in the program file).
         self._sub_lines: set = set()
+        self._sub_moves: set = set()   # move lines of the subroutine files run
+        self._sub_last       = 0       # last of them seen while inside one
+        self._after_sub      = False   # back from one, no program move seen yet
         self.from_sub        = False
         self.read_end        = False
 
-    def hold(self, motion_line: int, current_line: int) -> None:
+    def hold(self, motion_line: int, current_line: int,
+             sub_moves: Iterable[int] = ()) -> None:
         """A sample taken inside a subroutine: its line numbers are not the
-        program's. They count as stale until they change in the program."""
+        program's. They count as stale until they change in the program.
+        sub_moves: the move lines of the subroutine file (MacroMoves)."""
         motion_line, current_line = int(motion_line or 0), int(current_line or 0)
         self._stale_motion, self._motion_live = motion_line, False
         self._stale_current, self._current_live = current_line, False
         for ln in (motion_line, current_line):
             if ln > 0 and len(self._sub_lines) < SUB_LINES_MAX:
                 self._sub_lines.add(ln)
+        if sub_moves and len(self._sub_moves) < SUB_LINES_MAX:
+            self._sub_moves.update(sub_moves)
+        if motion_line in self._sub_moves:
+            self._sub_last = motion_line
+        self._after_sub = True
         if motion_line > 0:
             self.from_sub = True
 
     def _subs_line(self, line: int, prog: ProgramInfo) -> bool:
-        """Back in the program: is `line` still a subroutine's? (Its last moves
-        run after LinuxCNC is back, with its line numbers.) Only once one ran."""
-        return bool(self._sub_lines) and (line in self._sub_lines or not prog.is_move_line(line))
+        """Back in the program, before its first move: is `line` still a
+        subroutine's? Its last moves run after LinuxCNC is back, with its line
+        numbers: lines seen inside it, and its moves after the last one seen
+        (the remap runs top to bottom; motion catches up). After that program
+        move every program move line counts."""
+        return self._after_sub and (line in self._sub_lines
+                                    or (line > self._sub_last and line in self._sub_moves)
+                                    or not prog.is_move_line(line))
 
     def sample(self, motion_line: int, current_line: int, prog: ProgramInfo,
                read_line: int = 0) -> None:
@@ -354,7 +407,8 @@ class CycleLineTracker:
         elif motion_line > 0 and not prog.is_move_line(motion_line):
             motion_line = 0            # not a move of this program
         elif motion_line > 0 and motion_line != self._stale_motion:
-            self.from_sub = False
+            self.from_sub = self._after_sub = False
+            self._sub_last = 0
         if current_line > 0 and current_line in self._sub_lines:
             current_line = 0           # a subroutine's line, not the program's
         if not self._motion_live and motion_line > 0 and motion_line != self._stale_motion:

@@ -493,6 +493,49 @@ class StatusLoopTests(unittest.TestCase):
         self.assertEqual((last["parts_produced"], last["abort_count"]), (0, 1))
         self.assertEqual((c["payload"]["program_path"], c["payload"]["outcome"]), (prog, "aborted"))
 
+    def _atc_drill(self, stop):
+        """LX052_drill_ATC.ngc from the top (agent journal, 29 Oct 2026 11:51 and 12:06): first move line 27,
+        M6 on 30, holes from 37, tail 633, M30 634. While LinuxCNC is in rack_change.ngc motion shows 27 (the
+        program's G0, still running), 73, 92, 98; back in the program it still runs the remap's 103 and 110,
+        never seen inside it. `stop`: Stop pressed at the first hole (12:08:30 case)."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        os.makedirs(os.path.join(tmp.name, "macros"))
+        ini = os.path.join(tmp.name, "m.ini")
+        with open(ini, "w") as f:
+            f.write("[RS274NGC]\nSUBROUTINE_PATH = macros\nUSER_M_PATH = macros\n")
+        sub = os.path.join(tmp.name, "macros", "rack_change.ngc")
+        moves = (72, 73, 74, 75, 77, 82, 91, 92, 93, 94, 98, 103, 109, 110)
+        with open(sub, "w") as f:
+            f.write("".join("G53 G0 Z0\n" if n in moves else "(c)\n" for n in range(1, 115)))
+        prog = os.path.join(tmp.name, "LX052_drill_ATC.ngc")
+        with open(prog, "w") as f:
+            f.write("(h)\n" * 26 + "G0 Z20\nG28 G91 Z0\nG90\nM6 T01\nG43 H01\nM3 S40000\nG4 P2\nG00 Z20\n\n(T01)\n"
+                    + "".join("X%d Y%d\n" % (i, i) for i in range(596)) + "G0 Z20\nM30\n")
+        end = 9.0 if stop else 12.0
+        run = [(0.0, 99.0, "ini_filename", ini), (0.0, 99.0, "file", prog), (0.0, 99.0, "call_level", 0),
+               (4.0, end, "task_mode", 2), (4.0, end, "interp_state", 2),
+               (4.1, 6.5, "file", sub), (4.1, 6.5, "call_level", 1),     # LinuxCNC reads ahead into the M6
+               (4.2, 4.5, "motion_line", 27),
+               (4.5, 5.0, "motion_line", 73), (5.0, 5.5, "motion_line", 92), (5.5, 6.8, "motion_line", 98),
+               (6.8, 7.2, "motion_line", 103), (7.2, 7.8, "motion_line", 110), (7.8, 8.4, "motion_line", 34),
+               (8.4, 99.0, "motion_line", 37)]
+        if not stop:
+            run += [(9.0, 10.0, "motion_line", 300), (10.0, 99.0, "motion_line", 633)]
+        _, packets, _ = self.run_agent(run, stop_at=16.0, mes_enabled=True)
+        (c,) = self._cycles()
+        return packets[-1], c
+
+    def test_atc_program_from_the_top_is_not_run_from_here(self):
+        last, c = self._atc_drill(stop=False)
+        self.assertEqual((last["parts_produced"], last["abort_count"], last["run_from_here_count"]), (1, 0, 0))
+        self.assertEqual(c["payload"]["outcome"], "completed")
+
+    def test_atc_program_stopped_after_the_first_m6_is_an_abort(self):
+        last, c = self._atc_drill(stop=True)
+        self.assertEqual((last["parts_produced"], last["abort_count"], last["run_from_here_count"]), (0, 1, 0))
+        self.assertEqual(c["payload"]["outcome"], "aborted")             # was "unknown" on 29 Oct
+
     def test_agent_stopped_mid_run_is_unknown_not_an_abort(self):
         _cfg, prog, run = self._program()
         run = [(r[0], 99.0 if r[2] in ("task_mode", "interp_state") else r[1], r[2], r[3]) for r in run]

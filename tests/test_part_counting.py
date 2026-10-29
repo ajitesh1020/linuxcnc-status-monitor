@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from cycle_time_calculator import CycleTimeCalculator  # noqa: E402
 import tempfile  # noqa: E402
-from program_tracker import CycleLineTracker, ProgramFile, ProgramInfo, subroutine_dirs  # noqa: E402
+from program_tracker import (CycleLineTracker, MacroMoves, ProgramFile, ProgramInfo,  # noqa: E402
+                             subroutine_dirs)
 
 # 1 %            6 G0 X10 Y10 ... moves on 6..105
 # 2 (header)     106 G0 Z10     (tail move)
@@ -321,6 +322,120 @@ class SubroutineTests(unittest.TestCase):
         self.assertEqual(t.start_line, 4)
         self.assertFalse(t.is_run_from_here(prog))
         self.assertTrue(t.reached_end(prog))
+
+# LX052_drill_ATC.ngc (29 Oct 2026): header, first move G0 Z20 on 27, G28 G91 Z0 on 28, M6 T01 on 30,
+# G00 Z20 on 34, drill holes from 37 on (every line a move), tail 633, M30 634.
+ATC_PROGRAM = (["(header)"] * 26 + ["G0 Z20.0000", "G28 G91 Z0", "G90", "M6 T01", "G43 H01", "M3 S40000",
+                                    "G4 P2", "G00 Z20.0000", "", "(T01)"]
+               + [f"X{i} Y{i}" for i in range(596)] + ["G0 Z20", "M30"])
+# MillWright's rack_change.ngc: 114 lines, moves on these lines.
+RACK_MOVES = (72, 73, 74, 75, 77, 82, 91, 92, 93, 94, 98, 103, 109, 110)
+RACK_CHANGE = ["G53 G0 Z0" if n in RACK_MOVES else "(c)" for n in range(1, 115)]
+
+
+class RemapTailTests(unittest.TestCase):
+    """29 Oct 2026: every LX052 run from the top was logged as Run From Here. After its first M6,
+    LinuxCNC is back in the program while motion still runs rack_change.ngc's last moves (103, 110);
+    at 10 Hz those were never seen inside the remap, and in LX052 they are move lines too."""
+
+    def setUp(self):
+        self.prog = ProgramInfo.from_lines(ATC_PROGRAM)
+        self.assertEqual((self.prog.first_motion_line, self.prog.tail_line, self.prog.end_line), (27, 633, 634))
+        self.moves = frozenset(RACK_MOVES)
+
+    def _start(self, idle, held, back, sub_moves):
+        t = CycleLineTracker()
+        t.begin(idle, idle)
+        t.sample(idle, idle, self.prog)                      # first tick: stale line
+        for ln in held:                                      # stat.file = rack_change.ngc
+            t.hold(ln, ln, sub_moves)
+        for ln in back:                                      # back in the program
+            t.sample(ln, 37, self.prog)
+        return t
+
+    def test_remap_tail_after_first_m6_is_not_a_start_line(self):
+        # journal 11:51:16-11:51:30: 28 (G28, while LinuxCNC is already in the remap), 92, 98; back: 98, 110, 37
+        t = self._start(0, (28, 92, 98), (98, 110, 37), self.moves)
+        self.assertEqual((t.start_line, t.is_run_from_here(self.prog)), (37, False))
+        # 12:06:49-12:07:18: 27, 73, 77, 82, 92, 98; back: 98, 103, 110, 34, 37
+        t = self._start(633, (27, 73, 77, 82, 92, 98), (98, 103, 110, 34, 37), self.moves)
+        self.assertEqual((t.start_line, t.is_run_from_here(self.prog)), (34, False))
+
+    def test_without_the_macro_lines_the_tail_still_looks_like_run_from_here(self):
+        t = self._start(0, (28, 92, 98), (98, 110, 37), frozenset())   # macro file unreadable
+        self.assertEqual((t.start_line, t.is_run_from_here(self.prog)), (110, True))
+
+    def test_program_lines_count_again_after_its_first_move(self):
+        # A program move on a line number seen inside the remap (98) is the program's once it has moved.
+        t = self._start(0, (92, 98), (98, 110, 37, 60, 92, 98, 633), self.moves)
+        self.assertEqual((t.start_line, t.max_line, t.last_motion_line), (37, 633, 633))
+        self.assertTrue(t.reached_end(self.prog))
+        self.assertFalse(t.from_sub)
+
+    def test_program_move_on_an_earlier_remap_line_counts(self):
+        # The remap's moves at or before the last one seen inside it have already run: 73 is the program's.
+        t = self._start(0, (92, 98), (98, 73), self.moves)
+        self.assertEqual(t.start_line, 73)
+
+    def test_a_later_m6_hides_the_remap_tail_again(self):
+        t = self._start(0, (92, 98), (98, 110, 37, 300), self.moves)
+        for ln in (98, 103):                                 # second tool change
+            t.hold(ln, ln, self.moves)
+        for ln in (110, 109, 305):
+            t.sample(ln, 305, self.prog)
+        self.assertEqual((t.start_line, t.last_motion_line, t.max_line), (37, 305, 305))
+
+    def test_stopped_after_the_first_m6_is_an_abort(self):
+        m = _Machine(ATC_PROGRAM)
+        m.tracker.begin(0, 0)
+        m.calc.start_cycle(run_from_here=None, program=None)
+        m._track(0, 0)
+        for ln in (27, 73, 77, 98):
+            m.tracker.hold(ln, ln, self.moves)
+        for ln in (98, 103, 110, 34, 37):
+            m._track(ln, ln)
+        self.assertFalse(m.tracker.reached_end(m.prog))
+        m.calc._elapsed_ms_unsafe = lambda: 101_000                    # as _Machine.run
+        m.calc.stop_cycle()
+        snap = m.calc.snapshot()
+        self.assertEqual((snap.abort_count, snap.run_from_here_count, snap.parts_produced), (1, 0, 0))
+
+
+class MacroMovesTests(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.d)
+        self.path = os.path.join(self.d, "rack_change.ngc")
+        with open(self.path, "w") as f:
+            f.write("\n".join(RACK_CHANGE) + "\n")
+
+    def test_reads_move_lines_once_per_file_version(self):
+        mm = MacroMoves()
+        self.assertEqual(mm.lines(self.path), frozenset(RACK_MOVES))
+        with open(self.path, "a") as f:
+            f.write("G0 X1\n")                                       # line 115, new size
+        self.assertIn(115, mm.lines(self.path))
+
+    def test_cached_lines_are_not_read_again(self):
+        mm = MacroMoves()
+        first = mm.lines(self.path)
+        orig = open
+        import builtins
+        builtins.open = lambda *a, **k: self.fail("read again")      # noqa: E731
+        try:
+            self.assertIs(mm.lines(self.path), first)
+        finally:
+            builtins.open = orig
+
+    def test_missing_empty_and_big_files_give_no_lines(self):
+        mm = MacroMoves()
+        self.assertEqual(mm.lines(""), frozenset())
+        self.assertEqual(mm.lines(os.path.join(self.d, "nope.ngc")), frozenset())
+        big = os.path.join(self.d, "big.ngc")
+        with open(big, "w") as f:
+            f.write("G0 X1\n" * (MacroMoves.MAX_BYTES // 6 + 10))
+        self.assertEqual(mm.lines(big), frozenset())
+
 
 if __name__ == "__main__":
     unittest.main()

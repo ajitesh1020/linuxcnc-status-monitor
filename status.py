@@ -134,7 +134,8 @@ from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
                            single_instance)
 from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
-from program_tracker import CycleLineTracker, ProgramFile, ProgramScanner, subroutine_dirs
+from program_tracker import (CycleLineTracker, MacroMoves, ProgramFile, ProgramScanner,
+                             subroutine_dirs)
 
 AGENT_VERSION: str = "1.8.1"
 
@@ -478,6 +479,8 @@ class _CycleStateMachine:
         self._tracker  = CycleLineTracker()
         self._state    = self.IDLE
         self._in_sub   = False
+        self._sub_file = ""
+        self._macro_moves = MacroMoves()
         self._read_line = 0
         # Line numbers last seen while idle — stale values to ignore at start.
         self._idle_motion_line  = 0
@@ -493,7 +496,8 @@ class _CycleStateMachine:
         if self._in_sub:
             # Inside a subroutine / remap (e.g. the M6 tool change): the line
             # numbers count lines of that file, not of the program.
-            self._tracker.hold(motion_line, current_line)
+            self._tracker.hold(motion_line, current_line,
+                               self._macro_moves.lines(self._sub_file))
             return
         prog = self._scanner.info
         self._tracker.sample(motion_line, current_line, prog, self._read_line)
@@ -504,6 +508,7 @@ class _CycleStateMachine:
 
     def update(self, stat: linuxcnc.stat, in_subroutine: bool = False) -> str:
         self._in_sub = in_subroutine
+        self._sub_file = (_safe_get(stat, "file", "") or "") if in_subroutine else ""
         self._read_line = int(_safe_get(stat, "read_line", 0) or 0)
         is_running   = _is_program_running(stat)
         is_paused    = _is_program_paused(stat)
