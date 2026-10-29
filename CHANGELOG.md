@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-10-29
+
 ### Fixed
 
 - **An ATC program run from the top is no longer taken for Run From Here.**
