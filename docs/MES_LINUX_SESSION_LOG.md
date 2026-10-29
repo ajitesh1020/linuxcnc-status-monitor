@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 29 Oct 2026 (1.8.1 installed on OFC_PC; the agent followed the Windows service to a third address, 192.168.0.110).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 29 Oct 2026 (1.8.1 installed on OFC_PC; the agent followed the Windows service to a third address, 192.168.0.110; ATC Run From Here fix on `fix/remap-tail-lines`).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -337,6 +337,27 @@ checks at the start of this session:
 - No open PRs in the agent or MillWright repos.
 - `agent.log` again has a line dated 2026-04-28 (`not_enrolled -> offline` at start, before the clock was set):
   both the no-NTP item and the initial-label item below.
+
+**MES test review (29 Oct, read-only, for the Windows session).** Spool seq 165-219 today = MillWright outbox
+131-170 + 15 `cycle.observed`, all acked, attempts 0, no duplicate / quarantine; `mes_ack.json` seq 170. MillWright
+and agent agree on all 15 runs except one (below). Clock: not synchronised, 0 s off the Windows service (HTTP
+`Date`, 1 s resolution). MillWright: the `job/run` audit row of a run that ends after the operator logged out
+has no user (bce102f9, 12:06:17).
+
+**Agent bug found: an ATC program run from the top is taken for Run From Here** (all five `LX052_drill_ATC.ngc`
+runs today). After the first M6 LinuxCNC is back in the program while motion still runs `rack_change.ngc`'s last
+moves; the agent's journal: 11:51:16 `motion_line` 28 (inside the remap), 92, 98, then **110** back in the program
+(RFH, progress 13.7 % = line 110 of 27..633), then 37 (the first hole). 103 / 110 were never seen inside the remap
+at 10 Hz, and in LX052 they are move lines, so the 27 Oct rule (drop lines seen inside, or not moves of the
+program) let them through; the 28-line pick/drop program hid it. Effect: Run From Here count +1 per run, progress
+from ~14 %, and the 12:06:49 run stopped at line 37 was `unknown` (agent) vs `aborted` (MillWright), with a
+partial part at the next program change. Completed runs were still `completed`.
+Fix on branch `fix/remap-tail-lines`: `MacroMoves` reads the remap file's move lines once (≤ 256 KiB); until the
+program's first move after a subroutine, the remap's moves after the last one seen inside it are ignored; after
+that every program line counts. New tests: tracker replays of the 11:51 and 12:06 journal sequences, an
+end-to-end LX052-shaped run (both fail on the old code: RFH 1 / no abort), overlap and later-M6 cases,
+`MacroMoves` cache. 301 tests pass (`FLOORWATCH_DIR=~/fw-k-src`). Not yet on the machine: needs a .deb and an
+LX052 run from the top (expect `run_from_here_count` unchanged) and one stopped at the first hole (`aborted`).
 
 If the Windows PC keeps changing address, a DHCP reservation or a static address for it would avoid the
 6-7 s offline gap after each move (the agent copes either way).

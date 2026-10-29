@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An ATC program run from the top is no longer taken for Run From Here.**
+  Right after an M6 remap LinuxCNC is back in the program while motion still
+  runs the remap's last moves (`rack_change.ngc` lines 103, 110) with the
+  remap's line numbers. At 10 Hz the agent often never saw them inside the
+  remap, and in a long program they are move lines too, so a run of
+  `LX052_drill_ATC.ngc` from the top started "at line 110" (14 %): every run
+  counted a Run From Here, and one stopped at the first hole was `unknown`
+  instead of `aborted` (29 Oct; MillWright said aborted). The agent now reads
+  the remap file's move lines once (files up to 256 KiB) and, until the
+  program's first move after a tool change, ignores the remap's moves after the
+  last one it saw. After that program move every program line counts again
+  (before, a program line seen inside a remap was ignored for the whole run).
+
 ## [1.8.1] - 2026-10-28
 
 ### Fixed
