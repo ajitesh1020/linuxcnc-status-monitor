@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Oct 2026 (two-PC J test passed; `G28` fix checked on the machine; re-enrol fix merged; v1.7.1 pre-release published).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 29 Oct 2026 (1.8.1 installed on OFC_PC; the agent followed the Windows service to a third address, 192.168.0.110).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -20,7 +20,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
 | I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
-| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09, move back 14:18 (see below); `--check` fix after a move back: agent #51, in **1.8.1** |
+| K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09, move back 14:18 (see below); `--check` fix after a move back: agent #51, in **1.8.1**; on 29 Oct 1.8.1 followed the service to .110 by itself (see below) |
 
 Also merged: agent #21 (contract 1.1), #25 (docs: J unblocked). FloorWatch #39
 (contract 1.1) merged 23 Oct.
@@ -320,8 +320,26 @@ At the user's request this session merged agent #51 (`--check` after the service
 (deb + publish) passed: https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1.8.1
 (`linuxcnc-status-agent_1.8.1_all.deb`, SHA-256 `90881ad9…08d7`), marked **pre-release** with notes (K passed
 both ways; open: Stop after the last M6, the one stall, no NTP). Downloaded .deb checked (checksum OK,
-`AGENT_VERSION` 1.8.1, holds `forget_found`) and copied to `dist/` with its `SHA256SUMS`. Not installed on
-OFC_PC yet (the user does that).
+`AGENT_VERSION` 1.8.1, holds `forget_found`) and copied to `dist/` with its `SHA256SUMS`. Installed on OFC_PC
+by the user 28 Oct 14:28 (`dpkg` 1.8.1, `--version` 1.8.1).
+
+## Service at a new address again (29 Oct)
+
+Not a planned test. The link went `ok -> offline` on 28 Oct at 16:07 (the Windows PC was off). On 29 Oct the
+Windows PC came back as **192.168.0.110**, and at **09:55:00 the agent logged `MES service moved:
+https://192.168.0.104:8443 -> https://192.168.0.110:8443 (probe)`**, with no one doing anything. Read-only
+checks at the start of this session:
+- `mes/service_address.json` `{url https://192.168.0.110:8443, via probe, configured_url
+  https://192.168.0.104:8443}`; `config.yaml` still names .104.
+- `--check`: `https://192.168.0.110:8443 (found on the network by probe on 2026-10-29; configured
+  https://192.168.0.104:8443), site cb6a4a6c…, certificate valid until 2027-10-28`.
+- `--mes-status`: link **ok** (green), queue 0, operator Ajitesh (operator, `selected_name`).
+- No open PRs in the agent or MillWright repos.
+- `agent.log` again has a line dated 2026-04-28 (`not_enrolled -> offline` at start, before the clock was set):
+  both the no-NTP item and the initial-label item below.
+
+If the Windows PC keeps changing address, a DHCP reservation or a static address for it would avoid the
+6-7 s offline gap after each move (the agent copes either way).
 
 ## H impact runs (27 Oct)
 
@@ -452,7 +470,7 @@ avoided it only by draining by hand first. Options:
 3. **Package I:** say when the scanners are bought (plan §16 D1).
 3b. (Done 28 Oct 14:09) **Package K Windows check:** install 1.8.0 (`sudo dpkg -i linuxcnc-status-agent_1.8.0_all.deb`), then restart the Windows PC so it gets a new address
    (or set a temporary static one), and tell me the new address.
-4. **Time sync:** OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
+4. **Time sync** (still open 29 Oct): OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
    Pilot PCs need time sync.
 5. (Done 27 Oct) H impact runs; version 1.7.0.
