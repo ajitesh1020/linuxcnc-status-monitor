@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 29 Oct 2026 (1.8.1 installed on OFC_PC; the agent followed the Windows service to a third address, 192.168.0.110; ATC Run From Here fix on `fix/remap-tail-lines`).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 29 Oct 2026 (ATC Run From Here fix #55 released in v1.8.2 pre-release and checked on the machine; the agent followed the Windows service to a third address, 192.168.0.110).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -356,11 +356,48 @@ Fix on branch `fix/remap-tail-lines`: `MacroMoves` reads the remap file's move l
 program's first move after a subroutine, the remap's moves after the last one seen inside it are ignored; after
 that every program line counts. New tests: tracker replays of the 11:51 and 12:06 journal sequences, an
 end-to-end LX052-shaped run (both fail on the old code: RFH 1 / no abort), overlap and later-M6 cases,
-`MacroMoves` cache. 301 tests pass (`FLOORWATCH_DIR=~/fw-k-src`). Not yet on the machine: needs a .deb and an
-LX052 run from the top (expect `run_from_here_count` unchanged) and one stopped at the first hole (`aborted`).
+`MacroMoves` cache. 301 tests pass (`FLOORWATCH_DIR=~/fw-k-src`). Agent #55, merged 29 Oct by this session at
+the user's request (the user's own merge had not gone through); released in **1.8.2**, checked on the machine (see
+"Version 1.8.2").
 
 If the Windows PC keeps changing address, a DHCP reservation or a static address for it would avoid the
 6-7 s offline gap after each move (the agent copes either way).
+
+## Version 1.8.2 (29 Oct)
+
+At the user's request this session merged agent #56 (`AGENT_VERSION` 1.8.2, README, CHANGELOG `[1.8.2] -
+2026-10-29`; 301 tests pass). Tag `v1.8.2` on 935c71b; CI (deb + publish) passed:
+https://github.com/ajitesh1020/linuxcnc-status-monitor/releases/tag/v1.8.2 (`linuxcnc-status-agent_1.8.2_all.deb`,
+SHA-256 `12a7bedb…c60a`), marked **pre-release** with notes (the ATC fix; open: Stop after the last M6, the one
+stall, no NTP). Downloaded .deb checked (checksum OK, `AGENT_VERSION` 1.8.2, holds `MacroMoves`) and copied to
+`dist/` with its `SHA256SUMS` line. Installed on OFC_PC by the user **15:21:32** (`dpkg`), agent restarted
+15:21:42, `--version` 1.8.2, link ok.
+
+**Before, on 1.8.1 (29 Oct, 14:37-15:04).** Same bug as in the morning:
+
+| Run | MillWright | Agent 1.8.1 `cycle.observed` |
+|---|---|---|
+| SJ-942 14:37:50-14:39:24, 14:39:49-14:41:22 | completed | completed |
+| LX052 from the top 14:43:34-14:49:54, 14:50:29-14:56:58 | completed | completed, but log "Cycle CONTINUED mid-program (Run From Here #1, #2)" |
+| LX052 stopped 14:57:51-14:58:14 | aborted, line 110 | **unknown** ("Run-From-Here segment stopped ... 14%") |
+| LX052 14:58:23 (`selected_tools`), 14:59:58 and 15:00:47 (`run_from_here`) | aborted | unknown |
+| Pick/drop check 15:02:29-15:04:57 | aborted | aborted |
+
+**After, on 1.8.2 (29 Oct): passed.** All events acked (attempts 0), queue 0, link ok. `cycle.observed` carries
+`version: 1.8.2`. MillWright logout / AXIS restart / login 15:47:20-15:47:35 before the runs.
+
+| # | Run | Spool seq | MillWright | Agent 1.8.2 `cycle.observed` | Agent counters after |
+|---|---|---|---|---|---|
+| 1 | LX052 from the top, 15:48:09-15:54:28 (exec 265caa0d) | 258-260 | completed, 379.2 s, job +1 | **completed**, explicit | parts 1, aborts 0, **Run From Here 0** |
+| 2 | LX052 from the top, Stop at the first hole, 15:55:32-15:56:00 (exec d7d1d73a) | 261-263 | aborted, line 37, 27.4 s | **aborted**, explicit | aborts 1 (2 % done), Run From Here 0 |
+| 3 | SJ-942 15:56:14-15:57:47 (exec 3cf589ff) | 264-266 | completed, line 188, 93.4 s, job +1 | completed, explicit | parts 2 |
+
+- `agent.log` has no "Cycle CONTINUED mid-program" line since the install; `run_from_here_count` stayed 0 and
+  `is_run_from_here` false all through. In run 1, `motion_line` 27 at the start (from the top).
+- 15:56:13: starting SJ-942 after the stopped LX052 logged "Previous part abandoned at 2% - recorded as partial
+  part #1": the older rule for an aborted part when another program follows, unchanged by this fix.
+- For the FloorWatch ledger / Reports: event ids `05e221c1` (run 1), `aaf4773e` (run 2), `58032f6d` (run 3) are
+  the agent's `cycle.observed`.
 
 ## H impact runs (27 Oct)
 
