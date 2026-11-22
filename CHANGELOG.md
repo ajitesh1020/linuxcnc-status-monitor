@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-11-22
+
 ### Added
 
 - **Cycle gate verdict for MillWright** (MES plan P5.5, `agent_mes_gate.py`).
@@ -27,6 +29,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   that did not show a policy in time, or showed a verdict other than "not
   validated, no_order" (the simulator dispatches no work orders).
   `docs/FLEET_TEST.md` §7.
+- **Fleet simulator: MES traffic and ledger check** (MES plan P4.5,
+  `tools/fleet_sim_mes.py`). `fleet_sim.py run --mes` gives every simulated
+  machine a scanner, an operator and a MillWright-like panel. Its MES events
+  go through the agent's own spool and forwarder, across 13 scenarios.
+  `check --mes-db` / `--mes-url` compares the site service's record with
+  truth.json and exits 1 on any difference. `docs/FLEET_TEST.md` §7.
 
 ## [1.8.2] - 2026-10-29
 
