@@ -6,6 +6,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Cycle gate verdict for MillWright** (MES plan P5.5, `agent_mes_gate.py`).
+  With `mes_enabled` and `mes_millwright_config` set, the forwarder thread now
+  polls the site service's feedback endpoint every 15 s. After every
+  successful answer it writes the service's `cycle_gate` verdict to
+  `<config>/mw_data/cycle_gate.json` (`lcnc-agent.cycle_gate/1`, atomic,
+  `fetched_at_ms` = time of receipt). MillWright uses that file for its
+  optional "no validated job, no Cycle Start" rule. The file is left untouched
+  when the service cannot be reached or sends no valid verdict, so MillWright
+  sees it go stale. The agent only carries the verdict; it never decides
+  anything about the machine. Contract: MillWright `docs/MES_CYCLE_GATE.md`;
+  here `docs/MES_LINUX_WORK.md` §4.9.
+
 ## [1.8.2] - 2026-10-29
 
 ### Fixed

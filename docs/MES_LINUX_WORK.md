@@ -188,6 +188,9 @@ All in `<LinuxCNC config dir>/mw_data/` (the agent finds it through config key
 - `mes_ack.json` — written by the agent: `{"epoch": "<outbox_epoch>", "seq": <last
   seq stored in the spool>}`. MillWright prunes outbox rows older than 30 days
   **and** at or below it.
+- `cycle_gate.json` — written by the agent (MES plan P5.5, added 22 Nov 2026):
+  the site service's cycle gate verdict, for MillWright's optional "no
+  validated job, no Cycle Start" rule. See §4.9.
 
 ### 4.4 Spool (packages F, G)
 
@@ -247,8 +250,9 @@ Follow it exactly. Agent side:
   hour; forward only listed types, oldest first, within its limits (≤ 200
   events, ≤ 256 KiB before gzip); mark rows acknowledged per receipt; 503 /
   timeouts / broken connections → resend later, backoff 1 s → 5 min with
-  jitter. The feedback endpoint (`GET /v1/agents/{id}/feedback`, plan P2.5) does
-  not exist yet: skip it.
+  jitter. The feedback endpoint (`GET /v1/agents/{id}/feedback`, plan P2.5) is
+  polled every 15 s for the cycle gate verdict (§4.9) when MillWright is
+  configured; scans in it are not used yet.
 - **Status field** `mes_link` = `{"state": "ok" | "offline" | "not_enrolled" |
   "cert_expired" | "rejected", "last_ok_ms": n}` (`last_ok_ms` = last 200 from the
   service, absent if never). Additive; PROTOCOL.md §4.9. FloorWatch will show it
@@ -329,6 +333,44 @@ forwarder thread only):
 - Key: `mes_discovery_port` (default `5007`, `0` = never look), the service's
   `discovery_port`.
 
+### 4.9 Cycle gate verdict for MillWright (P5.5)
+
+Added 22 Nov 2026. Contract: MillWright `docs/MES_CYCLE_GATE.md`. FloorWatch
+computes the verdict (`execution.gate()`, `docs/MES_EXECUTION.md` "Cycle
+gate") and sends it in the feedback response as `cycle_gate`: `{"policy":
+"off" | "advisory" | "enforce", "validated", "reasons", "order"}`. MillWright
+does the enforcing, locally, from the copy the agent hands over. The agent
+only carries it.
+
+- **Who:** the forwarder thread (`agent_mes_forward.Forwarder`, `on_feedback`)
+  calls `GET /v1/agents/{machine_id}/feedback?since=<next_since>` every
+  `FEEDBACK_EVERY_S` (15 s) while enrolled, and `agent_mes_gate.GateWriter`
+  writes the file. Only with `mes_enabled` and `mes_millwright_config` set.
+  Never in the sampling loop.
+- **File:** `<config>/mw_data/cycle_gate.json`, written atomically (temp in the
+  same folder, fsync, `os.replace`) after **every** 200 response whose
+  `cycle_gate` is valid, even if unchanged, so its age moves:
+
+  ```json
+  {"schema": "lcnc-agent.cycle_gate/1", "fetched_at_ms": 1763790000123,
+   "written_at_ms": 1763790000150, "machine_id": "<machine_uuid>",
+   "cycle_gate": {"policy": "advisory", "validated": false,
+                  "reasons": ["nothing_bound"], "order": "WO-1042"}}
+  ```
+
+  `fetched_at_ms` = when the response arrived (MillWright measures staleness
+  from it: 120 s by default). `cycle_gate` is the response's object unchanged.
+- **Not touched** after a failed request, a non-200 answer, a response
+  without `cycle_gate` (a service older than Phase 5), or a `cycle_gate`
+  MillWright would reject (`agent_mes_gate.gate_of`: policy one of the three,
+  `validated` a bool equal to "no reasons", 0–32 reasons of 1–64 characters,
+  `order` a string of up to 128 characters, an integer or null). MillWright then
+  sees the verdict go stale, which never blocks unless that machine chose so.
+  The agent never deletes the file.
+- A 404 (no feedback endpoint) is asked again hourly. A failed feedback
+  request never stops forwarding. A network failure sets `mes_link` offline
+  like any other request, and 401 / 403 stop it like any other refusal.
+
 ## 5. Tests that must exist
 
 - A: identity created once and reused; damaged file kept and replaced; field in
@@ -360,6 +402,13 @@ forwarder thread only):
   address is used after a restart and dropped when `mes_service_url` changes or
   the machine enrols again; the real FloorWatch service moved to another port
   is found by probe and nothing is lost.
+- P5.5 (`tests/test_mes_gate.py`): the file is written atomically (fsync
+  before rename) after each feedback response with a valid `cycle_gate`; left
+  untouched after a failure, a response without `cycle_gate` or an invalid
+  one; `fetched_at_ms` = receipt time; `cycle_gate` unchanged; polling every
+  15 s with `next_since`; 404 hourly; a failing handler never stops forwarding;
+  MillWright's own parser (`panels/mw_gate.py`, skipped when MillWright is not
+  there) reads the file as written.
 - H: the loop never waits on the MES threads (a stalled spool does not raise
   `loop_lag_ms`).
 
