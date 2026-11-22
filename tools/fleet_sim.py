@@ -40,6 +40,9 @@ contract-valid MES events to the site service through the agent's own spool and
 forwarder (mTLS). truth.json then gains a "mes" part with every unit's expected
 attempts and exceptions, and `check --mes-db <ledger.db>` (or --mes-url, as a
 desktop user) compares the service's record with it (docs/FLEET_TEST.md §7).
+--mes-gate off,advisory,enforce also switches the site's cycle gate setting and
+checks that every machine's agent writes the verdict for MillWright
+(tools/fleet_sim_gate.py, MES plan P5.5).
 
     floorwatch-service profiles set tools/fleet_sim_profiles.json      # once
     python3 tools/fleet_sim.py run --machines 99 --minutes 30 --dir /tmp/fleet \\
@@ -560,6 +563,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="comma list (default all): " + ",".join(MES_SCENARIOS))
     g.add_argument("--mes-drain", type=float, default=300.0,
                    help="after the settle: seconds to let running MES jobs end and the spools empty")
+    g.add_argument("--mes-gate", default="",
+                   help="cycle gate policies to switch the site through, e.g. off,advisory,enforce "
+                        "(MES plan P5.5; tools/fleet_sim_gate.py); each machine's agent writes "
+                        "<dir>/<name>.mw_data/cycle_gate.json")
+    g.add_argument("--mes-gate-hold", type=float, default=90.0, help="seconds per cycle gate policy")
+    g.add_argument("--mes-gate-wait", type=float, default=60.0,
+                   help="every machine must show a new policy within this many seconds")
+    g.add_argument("--mes-admin-login", default="",
+                   help="desktop login with integration_admin, for --mes-gate (the setting is put back at the end)")
+    g.add_argument("--mes-admin-password-env", default="FW_ADMIN_PASSWORD",
+                   help="environment variable holding that user's password (default FW_ADMIN_PASSWORD)")
     r.set_defaults(func=cmd_run)
 
     c = sub.add_parser("check", help="compare a dashboard history database with truth.json")

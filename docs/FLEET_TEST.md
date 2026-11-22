@@ -303,6 +303,39 @@ exception missing, or an extra one on the simulator's runs (also any
 quarantine exception via a simulated machine). Warnings say when the truth is
 not final or events were still in the spools.
 
+### Cycle gate policies (MES plan P5.5)
+
+`--mes-gate off,advisory,enforce` also tests the hand-over of the cycle gate
+verdict to MillWright (`tools/fleet_sim_gate.py`; contract: MillWright
+`docs/MES_CYCLE_GATE.md`, agent `docs/MES_LINUX_WORK.md` §4.9):
+
+- Every simulated machine's forwarder polls the feedback endpoint and writes
+  `<dir>/<name>.mw_data/cycle_gate.json` with the agent's own
+  `agent_mes_gate.GateWriter`, as on a LinuxCNC PC with MillWright.
+- The simulator switches the site's `cycle_gate` setting through the listed
+  policies (`PUT /v1/admin/execution-settings`, as a desktop user with
+  `integration_admin`), each for `--mes-gate-hold` seconds (default 90). When
+  the run ends it puts the setting back as it was.
+- After each switch, every machine's file must show the new policy within
+  `--mes-gate-wait` seconds (default 60; the agent polls every 15 s). The
+  simulator dispatches no work orders, so every verdict must also be
+  `validated: false` with `no_order` among its reasons.
+- Run at least policies × hold minutes (`--minutes`).
+
+```bash
+floorwatch-service user add simadmin --role integration_admin --password-env FW_ADMIN_PASSWORD
+FW_ADMIN_PASSWORD=... python3 tools/fleet_sim.py run --machines 99 --minutes 6 --dir ~/fw-test/gate1     --mes --mes-service https://127.0.0.1:8443 --mes-code-cmd "floorwatch-service enroll-code"     --mes-gate off,advisory,enforce --mes-admin-login simadmin
+```
+
+`check` (with `--mes-db` or `--mes-url`, as above) then prints `MES cycle gate:
+off 99/99 (slowest 14 s), advisory 99/99 …`. It adds a `MISMATCH cycle gate …`
+line for:
+- a machine that never showed a policy;
+- a verdict that says validated, or lacks `no_order`;
+- a verdict older than the wait when it was read;
+- a setting the service refused;
+- a policy the run ended before reaching.
+
 ### Scenarios A–L with MES traffic
 
 The service is HTTPS (TCP), so netem goes on its port instead of UDP 5005.

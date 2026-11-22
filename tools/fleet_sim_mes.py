@@ -81,6 +81,8 @@ import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote
 
+import fleet_sim_gate
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 CONTRACT_DIR = os.path.join(ROOT, "contracts", "mes", "v1")
 PROFILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_sim_profiles.json")
@@ -817,11 +819,19 @@ class Link:
         from agent_mes_forward import enroll
         return enroll(self.url, codes.take(self.name), self.machine_id, self.name, self.mes_dir)
 
-    def open(self, boot_id: str) -> None:
+    def open(self, boot_id: str, mw_data: str = "") -> None:
+        """mw_data: also poll the feedback and write the cycle gate verdict there
+        (agent_mes_gate.GateWriter, as a real agent with MillWright does)."""
         from agent_mes_forward import Forwarder
         from agent_mes_spool import Spool
         self.spool = Spool(self.spool_path, self.machine_id, boot_id, agent_version())
-        self.forwarder = Forwarder(self.spool, self.url, self.mes_dir, self.machine_id)
+        on_feedback = None
+        if mw_data:
+            from agent_mes_gate import GateWriter
+            os.makedirs(mw_data, exist_ok=True)
+            on_feedback = GateWriter(mw_data, self.machine_id)
+        self.forwarder = Forwarder(self.spool, self.url, self.mes_dir, self.machine_id,
+                                   on_feedback=on_feedback)
         self.forwarder.start()
 
     def store(self, event: Dict[str, Any], body: bytes) -> None:
@@ -964,8 +974,25 @@ class LiveMes:
                               emit=self._store, oracle=self.oracle, wall=lambda now: time.time(),
                               producer_ids={n: lk.producer_ids() for n, lk in self.links.items()},
                               site_id=site)
+        # Cycle gate policies (MES plan P5.5, tools/fleet_sim_gate.py)
+        self.gate = self.admin = None
+        policies = fleet_sim_gate.parse_policies(getattr(args, "mes_gate", "") or "")
+        if policies:
+            password = os.environ.get(args.mes_admin_password_env, "")
+            if not (args.mes_admin_login and password):
+                raise RuntimeError("--mes-gate needs --mes-admin-login and the password in $%s"
+                                   % args.mes_admin_password_env)
+            first = self.links[names_uuids[0][0]]
+            self.admin = fleet_sim_gate.ServiceAdmin(url, args.mes_admin_login, password,
+                                                     os.path.join(first.mes_dir, "ca.crt"))
+            self.gate = fleet_sim_gate.GatePhases(
+                [n for n, _ in names_uuids], policies, self.admin.set,
+                lambda n: fleet_sim_gate.read_gate_file(
+                    os.path.join(fleet_sim_gate.mw_data_dir(args.dir, n), "cycle_gate.json")),
+                clock=time.monotonic, wall=time.time, hold_s=args.mes_gate_hold, wait_s=args.mes_gate_wait)
         for m in self.fleet.machines:
-            self.links[m.name].open(m.agent.boot_id)
+            self.links[m.name].open(m.agent.boot_id,
+                                    fleet_sim_gate.mw_data_dir(args.dir, m.name) if self.gate else "")
         self.oracle.start()
 
     def _store(self, m: MesMachine, event: Dict[str, Any]) -> None:
@@ -978,6 +1005,8 @@ class LiveMes:
 
     def step(self, now: float, quiet: bool) -> None:
         self.fleet.step(now, quiet)
+        if self.gate is not None:
+            self.gate.step()
 
     def pending(self) -> int:
         return sum(lk.pending() for lk in self.links.values())
@@ -995,6 +1024,8 @@ class LiveMes:
         deadline = clock() + timeout
         while clock() < deadline:
             self.fleet.step(clock(), True)
+            if self.gate is not None:
+                self.gate.step()
             if self.fleet.idle_all:
                 self.fleet.close()
                 if self.pending() == 0:
@@ -1008,10 +1039,17 @@ class LiveMes:
                   "receipts": self.receipts(), "invalid_events_not_sent": self.bad,
                   "readout_errors": self.oracle.errors,
                   "profiles": os.path.relpath(PROFILES_FILE, ROOT).replace(os.sep, "/")})
+        if self.gate is not None:
+            d["cycle_gate"] = self.gate.truth()
         return d
 
     def close(self) -> None:
         self.oracle.stop()
+        if self.admin is not None:
+            try:
+                self.admin.restore()             # the site's cycle gate setting as it was
+            except Exception as exc:
+                logger.error("cycle gate setting not put back (%s): set it again in FloorWatch", exc)
         for lk in self.links.values():
             lk.close()
 
@@ -1303,11 +1341,15 @@ def check(truth_doc: Dict[str, Any], ledger: Any, out: Callable[[str], None] = p
     if busy:
         out("WARNING: %d machine(s) were still in a job at the end: %s" % (len(busy), ", ".join(busy[:10])))
     bad, counts = compare(mes, ledger)
+    if mes.get("cycle_gate"):
+        bad += fleet_sim_gate.compare(mes["cycle_gate"])
     for line in bad:
         out("MISMATCH " + line)
     out("MES scenarios: " + ", ".join("%s %d" % kv for kv in sorted(mes.get("scenarios", {}).items())))
     if mes.get("receipts"):
         out("MES receipts: " + ", ".join("%s %d" % kv for kv in sorted(mes["receipts"].items())))
+    if mes.get("cycle_gate"):
+        out("MES cycle gate: " + fleet_sim_gate.summary(mes["cycle_gate"]))
     out("MES: %d units, %d attempts, %d scans, %d expected exceptions checked: %s"
         % (counts["units"], counts["attempts"], counts["scans"], counts["exceptions"],
            "exact" if not bad else "%d mismatch(es)" % len(bad)))
