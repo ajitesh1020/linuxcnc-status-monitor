@@ -8,7 +8,7 @@
 # GNU General Public License v2 or later. See the LICENSE file for details.
 # It links the GPL-licensed LinuxCNC Python module and is therefore GPL.
 """
-status.py  —  v1.8.2
+status.py  —  v1.9.0
 =====================
 LinuxCNC status monitor agent — streams machine state to the dashboard.
 
@@ -138,7 +138,7 @@ from cycle_time_calculator import CycleTimeCalculator, CycleSnapshot
 from program_tracker import (CycleLineTracker, MacroMoves, ProgramFile, ProgramScanner,
                              subroutine_dirs)
 
-AGENT_VERSION: str = "1.8.2"
+AGENT_VERSION: str = "1.9.0"
 
 # ---------------------------------------------------------------------------
 # Protocol
