@@ -399,6 +399,27 @@ stall, no NTP). Downloaded .deb checked (checksum OK, `AGENT_VERSION` 1.8.2, hol
 - For the FloorWatch ledger / Reports: event ids `05e221c1` (run 1), `aaf4773e` (run 2), `58032f6d` (run 3) are
   the agent's `cycle.observed`.
 
+## P4.5 fleet simulator MES extension (22 Nov)
+
+Done from a Windows dev session (branch `claude/fleet-sim-mes-ce6dc3`), FloorWatch plan
+`docs/MES_IMPLEMENTATION_PLAN.md` §P4.5. New `tools/fleet_sim_mes.py`, options on `fleet_sim.py run --mes`
+and `check --mes-db / --mes-url`, profiles `tools/fleet_sim_profiles.json`, tests
+`tests/test_fleet_sim_mes.py`, docs `docs/FLEET_TEST.md` §7 (scenarios, how to run, record).
+
+- Events go through the agent's own spool and forwarder (mTLS, batches ≤ 200, resend), two producers per
+  machine (agent, MillWright), 13 scenarios; truth.json `"mes"` holds every unit's expected attempts,
+  bindings, scans and exceptions; `check` reports each difference and exits 1 on any.
+- Verified: event generation contract-valid and deterministic for a seed; compare logic against a fake
+  ledger; the events through FloorWatch `main` 62ea96d's own ingest + projections + resolver in-process
+  (random order between machines, outages, lost receipts): exact; a live run against a local site service
+  (results in FLEET_TEST.md §7).
+- Finding for FloorWatch: scans are resolved in the background **after** the batch is stored, so a run
+  whose start arrives in the same batch as (or before the resolution of) its scan and binding gets no
+  binding id, no fixture position, `identified_after_start`, and the two-machine check does not see the
+  unit. After an outage that is the normal case. The simulator's operator therefore waits for "bound"
+  on the readout (feedback endpoint); without that wait the in-process run had 984 mismatches.
+- Not done: netem scenarios A–L with `--mes` on the LinuxCNC PC (FLEET_TEST.md §7 says how).
+
 ## H impact runs (27 Oct)
 
 OFC_PC: Intel i3-4170 3.70 GHz, kernel 6.1.0-53-rt-amd64, LinuxCNC 2.9.10 (POSIX realtime), AXIS with
