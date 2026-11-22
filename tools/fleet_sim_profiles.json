@@ -1,0 +1,20 @@
+{
+ "note": "Identifier profiles the fleet simulator's MES traffic needs (tools/fleet_sim.py --mes). Load them on the site service before the run: floorwatch-service profiles set tools/fleet_sim_profiles.json. Units of revision R3 only, so the simulator's wrong-revision labels (R2) stay unresolved.",
+ "profiles": [
+  {"name": "sim-pcb-unit",
+   "match": {"type": "regex", "pattern": "PCB-(?P<id>[0-9A-F]{4}-[0-9]{6})-(?P<rev>R3)"},
+   "entity_kind": "unit", "namespace": "pcb",
+   "normalize": {"trim": true, "case": "keep", "strip_prefix": ""},
+   "note": "fleet_sim unit labels PCB-<tag>-<serial>-R3"},
+  {"name": "sim-panel",
+   "match": {"type": "delimited", "delimiter": "|", "fields": ["panel", "product", "rev"], "id_field": "panel"},
+   "entity_kind": "panel", "namespace": "panel",
+   "normalize": {"trim": true, "case": "keep", "strip_prefix": ""},
+   "note": "fleet_sim panel labels <tag>-P<serial>|BRD-A|R3"},
+  {"name": "sim-lot",
+   "match": {"type": "gs1", "id_ai": "10", "require_ais": ["01"]},
+   "entity_kind": "lot", "namespace": "lot",
+   "normalize": {"trim": true, "case": "keep", "strip_prefix": ""},
+   "note": "fleet_sim lot labels: GS1 (01) GTIN + (10) lot, GS separated (sent base64)"}
+ ]
+}

@@ -33,10 +33,23 @@ history database with it — exact part counts and events, the review's gate 3.
 
 Loss / reordering: use Linux netem on the PC (docs/FLEET_TEST.md). For a quick
 look without it, --drop / --reorder lose or swap status packets in the sender.
+
+MES (plan P4.5, tools/fleet_sim_mes.py): with --mes every machine also scans
+units, panels and lots, binds them and runs them like MillWright, sending
+contract-valid MES events to the site service through the agent's own spool and
+forwarder (mTLS). truth.json then gains a "mes" part with every unit's expected
+attempts and exceptions, and `check --mes-db <ledger.db>` (or --mes-url, as a
+desktop user) compares the service's record with it (docs/FLEET_TEST.md §7).
+
+    floorwatch-service profiles set tools/fleet_sim_profiles.json      # once
+    python3 tools/fleet_sim.py run --machines 99 --minutes 30 --dir /tmp/fleet \\
+        --mes --mes-service https://127.0.0.1:8443 --mes-code-cmd "floorwatch-service enroll-code"
+    python3 tools/fleet_sim.py check --truth /tmp/fleet/truth.json --mes-db <service data>/ledger.db
 """
 import argparse
 import glob
 import json
+import logging
 import os
 import random
 import socket
@@ -66,6 +79,9 @@ EV_ESTOP = ("E-stop activated", "E-stop active")
 EV_CMD = "Command failed (G-code error)"
 EV_ABORT = "Program stopped before M2/M30"
 EV_JOINT = "Joint {} amplifier fault"
+# tools/fleet_sim_mes.py SCENARIOS (kept here so --help works without importing it)
+MES_SCENARIOS = ("unit", "panel", "lot", "duplicate_read", "wrong_revision", "setup", "run_from_here",
+                 "aborted", "interrupted", "two_heads", "operator_change", "late_scan", "conflict")
 
 
 def _span(text: str) -> Tuple[float, float]:
@@ -319,11 +335,13 @@ class SimMachine:
 
 
 def _write_truth(path: str, machines: List[SimMachine], args: argparse.Namespace,
-                 sender: Sender, final: bool) -> None:
+                 sender: Sender, final: bool, mes: Any = None) -> None:
     data = {"final": final, "written_at": int(time.time() * 1000),
             "args": {k: v for k, v in vars(args).items() if k != "func"},
             "sent": sender.sent, "dropped": sender.dropped, "swapped": sender.swapped,
             "machines": {m.name: m.truth for m in machines}}
+    if mes is not None:
+        data["mes"] = mes.truth_dict()
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=1)
@@ -342,6 +360,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     machines = [SimMachine(i, args, rng, sender, programs[i % len(programs)] if programs else None)
                 for i in range(args.machines)]
     truth = args.truth or os.path.join(args.dir, "truth.json")
+    mes = None
+    if args.mes:
+        import fleet_sim_mes
+        if not args.mes_service:
+            print("--mes needs --mes-service https://<host>:8443", file=sys.stderr)
+            return 2
+        logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(name)s: %(message)s")
+        mes = fleet_sim_mes.LiveMes(args, [(m.name, m.machine_uuid) for m in machines], args.seed)
+        print(f"fleet_sim: MES on -> {args.mes_service} (site {mes.site_id}); scenarios "
+              f"{','.join(mes.fleet.scenarios)}; tag {mes.fleet.tag}", flush=True)
     start = time.monotonic()
     busy_until = start + args.minutes * 60.0
     end = busy_until + args.settle
@@ -360,27 +388,42 @@ def cmd_run(args: argparse.Namespace) -> int:
             for m in machines:
                 m.step(now, dt, quiet)
                 m.tick(now)
+            if mes is not None:
+                mes.step(now, quiet)
             if now - last_truth >= 30:
                 last_truth = now
-                _write_truth(truth, machines, args, sender, final=False)
+                _write_truth(truth, machines, args, sender, final=False, mes=mes)
             if now - last_report >= args.report_s:
                 last_report = now
                 tot = {k: sum(m.truth[k] for m in machines)
                        for k in ("parts", "aborts", "estops", "cmd_failures", "sessions")}
                 print(f"  {now - start:6.0f} s {'(settling) ' if quiet else ''}"
                       f"sent {sender.sent} dropped {sender.dropped} swapped {sender.swapped} "
-                      + " ".join(f"{k}={v}" for k, v in tot.items()), flush=True)
+                      + " ".join(f"{k}={v}" for k, v in tot.items())
+                      + (f" mes_events={sum(x.events for x in mes.fleet.machines)} "
+                         f"mes_pending={mes.pending()}" if mes is not None else ""), flush=True)
             time.sleep(max(0.0, args.tick - (time.monotonic() - now)))
     except KeyboardInterrupt:
         print("interrupted: the truth file says final=false", flush=True)
-        _write_truth(truth, machines, args, sender, final=False)
+        _write_truth(truth, machines, args, sender, final=False, mes=mes)
         for m in machines:
             m.close()
+        if mes is not None:
+            mes.close()
         return 130
-    _write_truth(truth, machines, args, sender, final=True)
+    if mes is not None:
+        print(f"fleet_sim: MES: letting running jobs end and the spools empty (up to {args.mes_drain:.0f} s)",
+              flush=True)
+        delivered = mes.finish(args.mes_drain)
+        print(f"fleet_sim: MES: {'everything delivered' if delivered else 'NOT everything delivered'}; "
+              f"{mes.pending()} pending; receipts {mes.receipts()}", flush=True)
+    _write_truth(truth, machines, args, sender, final=True, mes=mes)
     for m in machines:
         m.close()
-    print(f"done. Check with: python3 tools/fleet_sim.py check --truth {truth} --db <history.db>")
+    if mes is not None:
+        mes.close()
+    print(f"done. Check with: python3 tools/fleet_sim.py check --truth {truth} --db <history.db>"
+          + (" --mes-db <service data>/ledger.db" if mes is not None else ""))
     return 0
 
 
@@ -403,6 +446,35 @@ def _counts(conn: sqlite3.Connection, key: str) -> Dict[str, Any]:
 def cmd_check(args: argparse.Namespace) -> int:
     with open(args.truth, encoding="utf-8") as f:
         truth = json.load(f)
+    if not (args.db or args.mes_db or args.mes_url):
+        print("check: give --db (dashboard history) and / or --mes-db / --mes-url (MES)", file=sys.stderr)
+        return 2
+    rc = _check_history(args, truth) if args.db else 0
+    if args.mes_db or args.mes_url:
+        rc = max(rc, _check_mes(args, truth))
+    return rc
+
+
+def _check_mes(args: argparse.Namespace, truth: Dict[str, Any]) -> int:
+    import fleet_sim_mes
+    if not truth.get("final"):
+        print("WARNING: the truth file is not final (the run was interrupted or is still going)")
+    if args.mes_db:
+        ledger: Any = fleet_sim_mes.DbLedger(args.mes_db)
+    else:
+        password = os.environ.get(args.mes_password_env, "")
+        if not (password and args.mes_login and args.mes_ca):
+            print(f"check: --mes-url needs --mes-login, --mes-ca and the password in "
+                  f"${args.mes_password_env}", file=sys.stderr)
+            return 2
+        ledger = fleet_sim_mes.HttpLedger(args.mes_url, args.mes_login, password, args.mes_ca)
+    try:
+        return fleet_sim_mes.check(truth, ledger)
+    finally:
+        ledger.close()
+
+
+def _check_history(args: argparse.Namespace, truth: Dict[str, Any]) -> int:
     conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     fields = ("parts", "aborts", "estops", "cmd_failures", "joint_faults")
     bad, rows = 0, []
@@ -474,15 +546,38 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="swap this share of status packets with the next one (0-1)")
     r.add_argument("--seed", type=int, default=None)
     r.add_argument("--report-s", type=float, default=60.0)
+    g = r.add_argument_group("MES (plan P4.5; tools/fleet_sim_mes.py, docs/FLEET_TEST.md section 7)")
+    g.add_argument("--mes", action="store_true", help="also send MES events to the site service")
+    g.add_argument("--mes-service", default="", help="site service URL, https://<host>:8443")
+    g.add_argument("--mes-codes", default="",
+                   help="file of one-time enrolment codes, one per line, for machines not yet enrolled")
+    g.add_argument("--mes-code-cmd", default="",
+                   help="command that prints one enrolment code per call (it gets --note <machine>), "
+                        "e.g. \"floorwatch-service --data D enroll-code\"")
+    g.add_argument("--mes-cycle", default="20,60", help="MES run length range, seconds")
+    g.add_argument("--mes-idle", default="5,20", help="time between MES jobs, seconds")
+    g.add_argument("--mes-scenarios", default="all",
+                   help="comma list (default all): " + ",".join(MES_SCENARIOS))
+    g.add_argument("--mes-drain", type=float, default=300.0,
+                   help="after the settle: seconds to let running MES jobs end and the spools empty")
     r.set_defaults(func=cmd_run)
 
     c = sub.add_parser("check", help="compare a dashboard history database with truth.json")
     c.add_argument("--truth", required=True)
-    c.add_argument("--db", required=True, help="the dashboard's history.db")
+    c.add_argument("--db", default="", help="the dashboard's history.db")
     c.add_argument("-v", "--verbose", action="store_true", help="list every machine")
+    c.add_argument("--mes-db", default="", help="the site service's ledger, read-only (<data>/ledger.db)")
+    c.add_argument("--mes-url", default="", help="or the site service over HTTPS, as a desktop user")
+    c.add_argument("--mes-login", default="", help="desktop login for --mes-url")
+    c.add_argument("--mes-password-env", default="FW_PASSWORD",
+                   help="environment variable holding that user's password (default FW_PASSWORD)")
+    c.add_argument("--mes-ca", default="", help="site CA certificate for --mes-url, e.g. a simulated "
+                                                "machine's <dir>/SIM-001.mes/ca.crt")
     c.set_defaults(func=cmd_check)
 
     args = ap.parse_args(argv)
+    if getattr(args, "mes_scenarios", None) == "all":
+        args.mes_scenarios = ",".join(MES_SCENARIOS)
     return args.func(args)
 
 

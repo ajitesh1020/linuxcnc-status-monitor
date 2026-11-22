@@ -196,3 +196,150 @@ AXIS check of D + E + G) could not reach the namespaces and played no part. Resu
 
 After the last run: `sudo tc qdisc del dev lo root`, and set `monitor_pc_ip` back
 in the agent's config.
+
+## 7. MES traffic (MES plan P4.5)
+
+`fleet_sim.py run --mes` adds the MES side to every simulated machine
+(`tools/fleet_sim_mes.py`): a scanner, an operator and a MillWright-like panel.
+Each machine sends contract-valid MES v1 events (`contracts/mes/v1`, checked
+before they are stored) to the FloorWatch site service exactly the way the
+real agent does: stored in the agent's own spool (`agent_mes_spool`), sent by
+the agent's own forwarder (`agent_mes_forward`: mTLS `POST /v1/events`,
+batches of at most 200, the same bytes again after any failure, backoff up to
+5 min). Each machine is enrolled once with a one-time code, like a real one
+(files in `<dir>/SIM-nnn.mes/`).
+
+Two producers per machine, each with a stable id (`<dir>/SIM-nnn.mes_producers.json`),
+a new epoch every run and its own rising `seq`:
+
+| Producer | Events |
+|---|---|
+| agent | `scan.received`, `binding.requested`, `binding.cleared` |
+| MillWright (via the agent's spool, as from its outbox) | `operator.session_started` / `_ended`, `execution.started` (with `bound_scan_ids`, `mode`, program and run-file hashes), `tool.snapshot`, `execution.ended`; `site_id` / `machine_id` null (contract rule 7) |
+
+### Scenarios
+
+Every machine first runs each scenario once (starting at a different one), then
+picks them at random with weights. `--mes-scenarios` limits the list.
+
+| Scenario | What the machine does | What the service must record (truth) |
+|---|---|---|
+| `unit` | one unit label at position A, a normal run (10 % aborted) | one attempt, `completed_pending_inspection` (or `aborted`), binding consumed |
+| `panel` | 2–4 panel labels at positions P1…Pn, one run | one attempt per panel, each with its position |
+| `lot` | a GS1 lot label (GS separated, so sent base64), no position | one attempt, no fixture position |
+| `duplicate_read` | the same label read twice; the second read re-uses position A | the first binding superseded, **one** attempt (of the second scan) |
+| `wrong_revision` | a label of revision R2: no profile matches; the operator clears it and runs a good unit | that scan `unresolved`, its binding superseded, no attempt; the good unit's attempt |
+| `setup` | a dry run or probe, then the real run | a `setup` attempt (not production, no binding, position A), then the production attempt that consumes the binding |
+| `run_from_here` | a run aborted, then run-from-here of the same item | `aborted`, then a continuation of it (`counts_as_production` false, no binding) |
+| `aborted` | a run aborted | `aborted` |
+| `interrupted` | a run ending `interrupted_unknown` | `interrupted_unknown` and one `interrupted_run` exception listing the attempt |
+| `two_heads` | `tool.snapshot` with two heads | still one attempt, with 2 heads |
+| `operator_change` | the operator is replaced mid-run (`session_ended` "replaced", new `session_started`) | the start operator stays on the attempt; the new one is a participant until the run ends |
+| `late_scan` | a run with nothing bound; the label is scanned after the end | no attempt, the scan `validated` (a supervisor would attach it; never matched by time) |
+| `conflict` | the same unit scanned and running on two machines at once | two attempts, **exactly one held**, one `unit_on_two_machines` exception on the held run |
+
+**The operator waits for green.** Before a run that uses scans, the simulated
+operator waits until the readout shows them bound (the simulator asks
+`GET /v1/agents/{id}/feedback`, the readout's own source). The service resolves
+scans in the background after a batch is stored, so a run started before that
+records no binding and no fixture position, the item is marked
+`identified_after_start`, and the two-machine check cannot see it
+(`docs/MES_BINDING.md` in FloorWatch). With the wait, the record is the same
+whatever the network does; during an outage the machines simply wait. The two
+runs of a `conflict` keep running until both starts are acknowledged, so the
+service always sees them overlap.
+
+`truth.json` gains `"mes"`: every unit (`namespace/id`) with its expected
+attempts (machine, run, scan, state, mode, `counts_as_production`, held,
+continuation, fixture position, binding, operator, participants, heads), its
+scans and bindings; the unresolved scans; the expected exceptions; all run ids;
+per machine the producers, event counts and scenarios; the forwarders' receipts
+and anything still undelivered.
+
+### Run
+
+On the site service PC (once per test site), load the profiles the simulator's
+labels need, and add a desktop user for the HTTPS check:
+
+```bash
+floorwatch-service profiles set tools/fleet_sim_profiles.json
+floorwatch-service user add simcheck --role viewer --password-env FW_PASSWORD
+```
+
+Then the fleet (here 99 machines; with MES the run also enrols every machine
+that is not enrolled yet, getting one code per machine from the command):
+
+```bash
+python3 tools/fleet_sim.py run --machines 99 --minutes 30 --settle 180 \
+    --target 127.0.0.1:5005 --dir ~/fw-test/fleet1 --seed 1 \
+    --mes --mes-service https://127.0.0.1:8443 \
+    --mes-code-cmd "floorwatch-service --data <service data> enroll-code"
+```
+
+Or make the codes first (`enroll-code`, one per line in a file) and pass
+`--mes-codes FILE`. Options: `--mes-cycle 20,60` run length, `--mes-idle 5,20`
+time between jobs (seconds), `--mes-drain 300` how long after the settle the
+simulator lets running jobs end and the spools empty. Use a fresh `--dir` per
+run, or keep it to reuse the enrolments (every run gets new ids and a new
+epoch, so runs never collide).
+
+### Check
+
+```bash
+# read the service's ledger directly (read-only)
+python3 tools/fleet_sim.py check --truth ~/fw-test/fleet1/truth.json --mes-db <service data>/ledger.db
+# or over HTTPS, as a desktop user
+FW_PASSWORD=... python3 tools/fleet_sim.py check --truth ~/fw-test/fleet1/truth.json \
+    --mes-url https://127.0.0.1:8443 --mes-login simcheck --mes-ca ~/fw-test/fleet1/SIM-001.mes/ca.crt
+# both, with the dashboard's history as before
+python3 tools/fleet_sim.py check --truth … --db ~/fw-test/run1/history.db --mes-db …
+```
+
+Pass: `MES: … checked: exact`, exit code 0. Every difference is one
+`MISMATCH` line: a missing, extra or duplicated attempt; a wrong state, mode,
+production flag, held flag, continuation, fixture position, binding, operator,
+participant or head count; a scan or binding in the wrong state; an expected
+exception missing, or an extra one on the simulator's runs (also any
+quarantine exception via a simulated machine). Warnings say when the truth is
+not final or events were still in the spools.
+
+### Scenarios A–L with MES traffic
+
+The service is HTTPS (TCP), so netem goes on its port instead of UDP 5005.
+Shape both directions on `lo`, in the same namespace as in §5:
+
+```bash
+sudo tc qdisc add dev lo root handle 1: prio bands 4
+sudo tc filter add dev lo parent 1:0 protocol ip prio 1 u32 \
+    match ip protocol 6 0xff match ip dport 8443 0xffff flowid 1:4
+sudo tc filter add dev lo parent 1:0 protocol ip prio 1 u32 \
+    match ip protocol 6 0xff match ip sport 8443 0xffff flowid 1:4
+sudo tc qdisc add dev lo parent 1:4 handle 40: netem loss 10%
+```
+
+Add both the UDP 5005 filter (§5) and these two to run the dashboard and the
+MES side through the same impairment.
+
+| # | MES variant | Expected |
+|---|---|---|
+| A | baseline | `check --mes-db` exact; receipts: 0 quarantined, 0 rejected |
+| B, C | loss 10 % / 30 % on port 8443 | exact (TCP and the forwarder's resend recover) |
+| D | reorder | exact (per machine the spool keeps order; between machines order does not matter) |
+| E | duplicate | exact; a resend after a lost receipt answers `duplicate` |
+| F | 30 s `loss 100%` | exact; machines wait for green during the outage |
+| G | 10 min `loss 100%` | exact; give `--mes-drain 900` (the forwarder's backoff reaches 5 min) |
+| H1, H2, H3 | stop / `kill -9` / restart the **site service** (`floorwatch-service run`) instead of the dashboard | exact; batches not acknowledged are sent again |
+| I | pruned journal: not applicable (the MES spool never drops unsent events) | — |
+| J | everything at once on port 8443 | exact |
+| K | big programs: unchanged (UDP side only) | exact |
+| L | load: 99 machines with `--mes`, note the service's CPU / memory | indicative |
+
+### Record (MES)
+
+| Date | Where | Run | Result |
+|---|---|---|---|
+| 22 Nov 2026 | Windows 11 dev PC, local FloorWatch site service (`main` 62ea96d, fresh `init`, profiles loaded) on 127.0.0.1:18443, no netem; 13 machines enrolled by the run with `--mes-code-cmd` | 13 sim, 4 min + 10 s settle, `--mes-cycle 3,8 --mes-idle 1,3`, seed 12; **H2-like**: the site service killed (forced) at +60 s, started again on the same data ~45 s later | **exact** with `--mes-db` and with `--mes-url` (viewer login): 258 units, 287 attempts, 303 scans, 28 expected exceptions; every scenario (conflict 15, wrong_revision 15, setup 16, run_from_here 13 …). Receipts: 1416 stored, 0 quarantined, 0 rejected; spools empty at the end. During the outage the pending events rose to 51 and the machines waited for green. Service log: no warnings except discovery's UDP 5007 being in use on that PC. (A first run crashed in the simulator's own progress report — fixed before this run.) |
+| 22 Nov 2026 | in-process, FloorWatch `main` 62ea96d ingest + projections + resolver (`FLOORWATCH_SRC=… python -m unittest tests.test_fleet_sim_mes`) | 13 sim, 150 s virtual; machines delivered in random order, 2 % chance of a 2–15 s outage per machine per step, 10 % of receipts lost (batch resent) | **exact** (every scenario, 0 quarantined / rejected, duplicates seen). The same run with the operator **not** waiting for green: 984 mismatches (`binding none`, `identified_after_start`), as described above |
+
+Not yet run: the netem scenarios A–L with `--mes` on the LinuxCNC PC (needs that PC
+and its namespace setup).
