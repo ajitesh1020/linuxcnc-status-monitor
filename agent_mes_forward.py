@@ -41,6 +41,12 @@ address that passes the normal TLS check and answers GET /v1/capabilities, and
 keeps it in mes/service_address.json (used after restarts; config.yaml is
 not changed).
 
+Feedback (MES plan P5.5): with an `on_feedback(doc, fetched_at_ms)` callback,
+GET /v1/agents/{machine_id}/feedback every FEEDBACK_EVERY_S while the link is
+up; each 200 goes to the callback (agent_mes_gate.GateWriter writes MillWright's
+mw_data/cycle_gate.json from it). A failed or refused feedback request never
+stops forwarding; a 404 (a service without the endpoint) is asked again hourly.
+
 `status` (a dict replaced atomically) is what the status packet carries as
 `mes_link`: {"state": ok|offline|not_enrolled|cert_expired|rejected,
 "last_ok_ms": n} — last_ok_ms is the last 200 from the service, absent if never.
@@ -81,6 +87,8 @@ RECEIPTS = ("stored", "duplicate", "quarantined", "rejected")
 # Used until the service has answered /v1/capabilities (its documented defaults).
 DEFAULT_LIMITS = {"max_batch_events": 200, "max_batch_bytes": 262144, "max_event_bytes": 16384}
 GZIP_FROM = 1024              # compress bodies bigger than this
+FEEDBACK_EVERY_S = 15.0       # feedback poll (MillWright treats a verdict older than 120 s as stale)
+FEEDBACK_MISSING_S = 3600.0   # the service has no feedback endpoint (404): ask again this often
 
 STATES = ("ok", "offline", "not_enrolled", "cert_expired", "rejected")
 
@@ -508,9 +516,11 @@ class Forwarder(threading.Thread):
                  transport_factory: Optional[Callable[[str, str], Any]] = None,
                  wall: Callable[[], float] = time.time, clock: Callable[[], float] = time.monotonic,
                  rand: Callable[[], float] = random.random,
-                 finder: Optional[Callable[[str, str], List[Tuple[str, int, str]]]] = None) -> None:
+                 finder: Optional[Callable[[str, str], List[Tuple[str, int, str]]]] = None,
+                 on_feedback: Optional[Callable[[Dict[str, Any], int], Any]] = None) -> None:
         """`finder(site_id, ca_sha256)` -> [(ip, port, via)] looks for the service on the
-        network (agent_mes_discovery.Finder); None = never look."""
+        network (agent_mes_discovery.Finder); None = never look. `on_feedback(doc,
+        fetched_at_ms)` gets every successful feedback response; None = never asked."""
         super().__init__(name="mes-forwarder", daemon=True)
         self.spool, self.dir, self.machine_id = spool, directory, machine_id
         self.configured_url = _norm_url(service_url)
@@ -534,6 +544,10 @@ class Forwarder(threading.Thread):
         self.status: Dict[str, Any] = {"state": "not_enrolled"}
         self._last_ok_ms: Optional[int] = None
         self.sent = {s: 0 for s in RECEIPTS}
+        self.on_feedback = on_feedback
+        self._fb_due = 0.0                           # monotonic time of the next feedback request
+        self._fb_since = 0                           # the service's next_since (scan changes seen)
+        self._fb_logged: Optional[str] = None
 
     # -- status -------------------------------------------------------------
     def _set_state(self, state: str) -> None:
@@ -609,6 +623,7 @@ class Forwarder(threading.Thread):
             self._set_state("not_enrolled")
             return False
         self.types, self._caps_at = None, None
+        self._fb_due = 0.0                           # ask for feedback at once on a (re)load
         return True
 
     # -- one request ----------------------------------------------------------
@@ -733,6 +748,47 @@ class Forwarder(threading.Thread):
         self._ok()
         return True
 
+    # -- feedback (P5.5: cycle gate verdict for MillWright) -------------------------
+    def _fb_log(self, why: Optional[str]) -> None:
+        if why and why != self._fb_logged:
+            logger.warning("MES feedback: %s", why)
+        self._fb_logged = why
+
+    def feedback_once(self) -> bool:
+        """One feedback request; the response goes to on_feedback. True = answered 200.
+        Never changes what is forwarded; a network failure sets the link offline like
+        any other request."""
+        self._fb_due = self.clock() + FEEDBACK_EVERY_S
+        r = self._call("GET", "/v1/agents/%s/feedback?since=%d" % (self.machine_id, self._fb_since))
+        if r is None:
+            return False
+        status, raw = r
+        if status == 404:
+            self._fb_due = self.clock() + FEEDBACK_MISSING_S
+            self._fb_log("the site service has no feedback endpoint (HTTP 404); asking again in 1 h")
+            return False
+        if status != 200:
+            self._fb_log("HTTP %d %s" % (status, _error_of(raw)))
+            return False
+        fetched_at_ms = int(self.wall() * 1000)
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+            if not isinstance(doc, dict):
+                raise ValueError("not an object")
+        except (UnicodeDecodeError, ValueError) as exc:
+            self._fb_log("response not understood (%s)" % exc)
+            return False
+        nxt = doc.get("next_since")
+        if isinstance(nxt, int) and not isinstance(nxt, bool) and nxt >= self._fb_since:
+            self._fb_since = nxt
+        self._fb_log(None)
+        self._ok()
+        try:
+            self.on_feedback(doc, fetched_at_ms)
+        except Exception as exc:                     # the callback never stops forwarding
+            logger.error("MES feedback handler: %s", exc)
+        return True
+
     # -- one batch -------------------------------------------------------------
     def _batch(self) -> List[Tuple[int, bytes]]:
         """Pending rows of accepted types, oldest first, within the limits."""
@@ -833,6 +889,10 @@ class Forwarder(threading.Thread):
                 if self.transport is None:
                     return RECHECK_S
                 return 0.0 if self._look() else self._wait_s()
+        if self.on_feedback is not None and self.clock() >= self._fb_due:
+            self.feedback_once()
+            if self.transport is None:
+                return RECHECK_S
         n = self.send_once()
         if self.transport is None:
             return RECHECK_S

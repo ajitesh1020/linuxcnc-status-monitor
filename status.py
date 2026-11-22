@@ -125,6 +125,7 @@ from agent_journal import Journal, JournalServer
 from agent_gcode import GcodeFileSender
 from agent_net import UdpSender
 import agent_mes_spool
+import agent_mes_gate
 import agent_mes_link
 import agent_mes_discovery
 import agent_mes_forward
@@ -1034,9 +1035,15 @@ def main() -> None:
             finder = agent_mes_discovery.Finder(
                 cfg["mes_discovery_port"],
                 agent_mes_discovery.lan_targets(cfg["monitor_interface"], cfg["exclude_interfaces"]))
+        # Cycle gate verdict for MillWright (agent_mes_gate.py, MES plan P5.5): the
+        # forwarder polls the feedback endpoint and the writer puts the verdict in
+        # mw_data/cycle_gate.json. Only with MillWright configured.
+        gate_writer = None
+        if mw_data:
+            gate_writer = agent_mes_gate.GateWriter(mw_data, machine_uuid)
         mes_forwarder = agent_mes_forward.Forwarder(
             mes_spool, cfg["mes_service_url"], agent_mes_forward.mes_dir(USER_CONFIG_DIR), machine_uuid,
-            finder=finder)
+            finder=finder, on_feedback=gate_writer)
         mes_forwarder.start()
     # Operator readout (agent_mes_status.py, MES plan P2.6): own thread writes
     # mes_status.json from the status dicts above; no I/O in the loop.
