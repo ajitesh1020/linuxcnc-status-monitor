@@ -303,6 +303,39 @@ exception missing, or an extra one on the simulator's runs (also any
 quarantine exception via a simulated machine). Warnings say when the truth is
 not final or events were still in the spools.
 
+### Cycle gate policies (MES plan P5.5)
+
+`--mes-gate off,advisory,enforce` also tests the hand-over of the cycle gate
+verdict to MillWright (`tools/fleet_sim_gate.py`; contract: MillWright
+`docs/MES_CYCLE_GATE.md`, agent `docs/MES_LINUX_WORK.md` §4.9):
+
+- Every simulated machine's forwarder polls the feedback endpoint and writes
+  `<dir>/<name>.mw_data/cycle_gate.json` with the agent's own
+  `agent_mes_gate.GateWriter`, as on a LinuxCNC PC with MillWright.
+- The simulator switches the site's `cycle_gate` setting through the listed
+  policies (`PUT /v1/admin/execution-settings`, as a desktop user with
+  `integration_admin`), each for `--mes-gate-hold` seconds (default 90). When
+  the run ends it puts the setting back as it was.
+- After each switch, every machine's file must show the new policy within
+  `--mes-gate-wait` seconds (default 60; the agent polls every 15 s). The
+  simulator dispatches no work orders, so every verdict must also be
+  `validated: false` with `no_order` among its reasons.
+- Run at least policies × hold minutes (`--minutes`).
+
+```bash
+floorwatch-service user add simadmin --role integration_admin --password-env FW_ADMIN_PASSWORD
+FW_ADMIN_PASSWORD=... python3 tools/fleet_sim.py run --machines 99 --minutes 6 --dir ~/fw-test/gate1     --mes --mes-service https://127.0.0.1:8443 --mes-code-cmd "floorwatch-service enroll-code"     --mes-gate off,advisory,enforce --mes-admin-login simadmin
+```
+
+`check` (with `--mes-db` or `--mes-url`, as above) then prints `MES cycle gate:
+off 99/99 (slowest 14 s), advisory 99/99 …`. It adds a `MISMATCH cycle gate …`
+line for:
+- a machine that never showed a policy;
+- a verdict that says validated, or lacks `no_order`;
+- a verdict older than the wait when it was read;
+- a setting the service refused;
+- a policy the run ended before reaching.
+
 ### Scenarios A–L with MES traffic
 
 The service is HTTPS (TCP), so netem goes on its port instead of UDP 5005.
@@ -339,6 +372,7 @@ MES side through the same impairment.
 | Date | Where | Run | Result |
 |---|---|---|---|
 | 22 Nov 2026 | Windows 11 dev PC, local FloorWatch site service (`main` 62ea96d, fresh `init`, profiles loaded) on 127.0.0.1:18443, no netem; 13 machines enrolled by the run with `--mes-code-cmd` | 13 sim, 4 min + 10 s settle, `--mes-cycle 3,8 --mes-idle 1,3`, seed 12; **H2-like**: the site service killed (forced) at +60 s, started again on the same data ~45 s later | **exact** with `--mes-db` and with `--mes-url` (viewer login): 258 units, 287 attempts, 303 scans, 28 expected exceptions; every scenario (conflict 15, wrong_revision 15, setup 16, run_from_here 13 …). Receipts: 1416 stored, 0 quarantined, 0 rejected; spools empty at the end. During the outage the pending events rose to 51 and the machines waited for green. Service log: no warnings except discovery's UDP 5007 being in use on that PC. (A first run crashed in the simulator's own progress report — fixed before this run.) |
+| 22 Nov 2026 | Windows 11 dev PC, local FloorWatch site service (`main` with Phase 5, fresh `init`, profiles loaded, user `simadmin` with integration_admin) on 127.0.0.1:18443; 3 machines enrolled by the run | 3 sim, 4.5 min + 10 s settle, `--mes-cycle 3,8 --mes-idle 1,3`, seed 5, **`--mes-gate off,advisory,enforce --mes-gate-hold 75`** | **exact** with `--mes-db`: 82 units, 96 attempts, 98 scans, 9 expected exceptions. Cycle gate: off 3/3, advisory 3/3 (slowest 6 s), enforce 3/3 (slowest 13 s), every verdict `validated: false` with `no_order`. Setting put back to `off` at the end. The files written were read with MillWright's `mw_gate.py`, whose rule refused Cycle Start under enforce. Receipts: 461 stored, 0 quarantined / rejected. (The `off` phase was already the site's setting, so it passed at once.) |
 | 22 Nov 2026 | in-process, FloorWatch `main` 62ea96d ingest + projections + resolver (`FLOORWATCH_SRC=… python -m unittest tests.test_fleet_sim_mes`) | 13 sim, 150 s virtual; machines delivered in random order, 2 % chance of a 2–15 s outage per machine per step, 10 % of receipts lost (batch resent) | **exact** (every scenario, 0 quarantined / rejected, duplicates seen). The same run with the operator **not** waiting for green: 984 mismatches (`binding none`, `identified_after_start`), as described above |
 
 Not yet run: the netem scenarios A–L with `--mes` on the LinuxCNC PC (needs that PC

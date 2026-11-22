@@ -19,6 +19,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   sees it go stale. The agent only carries the verdict; it never decides
   anything about the machine. Contract: MillWright `docs/MES_CYCLE_GATE.md`;
   here `docs/MES_LINUX_WORK.md` §4.9.
+- **Fleet simulator: cycle gate policies** (`tools/fleet_sim_gate.py`).
+  `fleet_sim.py run --mes --mes-gate off,advisory,enforce` switches the site's
+  cycle gate setting through the listed policies, as an `integration_admin`
+  user, and puts it back at the end. Every simulated machine writes
+  `cycle_gate.json` with the agent's own code. `check` reports every machine
+  that did not show a policy in time, or showed a verdict other than "not
+  validated, no_order" (the simulator dispatches no work orders).
+  `docs/FLEET_TEST.md` §7.
 
 ## [1.8.2] - 2026-10-29
 
