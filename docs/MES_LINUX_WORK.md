@@ -277,8 +277,19 @@ at start when it is off). Display only: nothing decides anything from it.
           "last_ok_ms": n},               last_ok_ms absent if never
  "scan": null | {"code", "status": "received" | "pending" | "bound" | "rejected",
                  "reason", "at_ms"},      null until scanners (P2.1-P2.3)
- "bound": []}                             items bound to this machine (P2.1-P2.3)
+ "bound": [],                             items bound to this machine (P2.1-P2.3)
+ "scanners": [                            TCP scanners (agent_scan_tcp.py); [] when none
+   {"id": "A", "state": "connected" | "disconnected" | "error" | "setup",
+    "detail": str | null, "model": str | null,
+    "last_read": {"code", "status", "reason", "at_ms", "scan_id"?} | null,
+    "no_read_rate": n | null,             % no-reads over the last 100 triggers
+    "triggers": n, "retune_suggested": bool, "rate_limited": n}]}
 ```
+
+`scanners` was added 28 Nov 2026 (Keyence SR-X work, package 2; additive). A
+no-read shows as `scan` `{"status": "rejected", "reason": "no_read"}` (red).
+`retune_suggested` → the strip shows "scanner needs tuning" (amber). Scanner
+colours: green connected, amber setup / disconnected, red error.
 
 - Written by its own thread, atomically (temp file + `os.replace`), at most
   twice a second and only on a change, but at least every 5 s. A reader treats

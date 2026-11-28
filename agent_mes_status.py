@@ -16,7 +16,14 @@ reads it to decide anything about the machine.
    "scan": null,                         last scan, once scanners exist (P2.1-P2.3):
                                          {"code", "status": received | pending | bound | rejected,
                                           "reason", "at_ms"}
-   "bound": []}                          items bound to this machine (P2.1-P2.3)
+   "bound": [],                          items bound to this machine (P2.1-P2.3)
+   "scanners": [                         TCP scanners (agent_scan_tcp.py); [] when none
+       {"id": "A", "state": connected | disconnected | error | setup,
+        "detail": str | null, "model": str | null,
+        "last_read": {"code", "status", "reason", "at_ms", "scan_id"?} | null,
+        "no_read_rate": % over the last 100 triggers | null, "triggers": n,
+        "retune_suggested": bool,         MES strip: "scanner needs tuning"
+        "rate_limited": n}]}
 
 Written by its own thread (never the sampling loop), atomically (temp file + rename),
 at most twice a second and only when something changed, but at least every REFRESH_S
@@ -27,6 +34,8 @@ Colours (plan P2.6), the same in MillWright and --mes-status:
   scan    grey = received, amber = pending lookup, green = bound, red = rejected
   queue   red = full (new scans are refused: scan.rejected_local spool_full)
   link    green = ok, amber = offline, grey = not_enrolled, red = cert_expired / rejected
+  scanner green = connected, amber = setup / disconnected, red = error;
+          amber "needs tuning" when retune_suggested
 """
 from __future__ import annotations
 
@@ -48,6 +57,7 @@ STALE_S = 15.0              # readers: older than this = the agent is not runnin
 SCAN_COLOUR = {"received": "grey", "pending": "amber", "bound": "green", "rejected": "red"}
 LINK_COLOUR = {"ok": "green", "offline": "amber", "not_enrolled": "grey",
                "cert_expired": "red", "rejected": "red"}
+SCANNER_COLOUR = {"connected": "green", "setup": "amber", "disconnected": "amber", "error": "red"}
 
 
 def status_path(config_dir: str) -> str:
@@ -57,7 +67,7 @@ def status_path(config_dir: str) -> str:
 def build(machine_uuid: Optional[str], queue: Optional[Dict[str, Any]],
           link: Optional[Dict[str, Any]], operator: Optional[Dict[str, Any]],
           scan: Optional[Dict[str, Any]] = None, bound: Optional[List[Any]] = None,
-          running: bool = True) -> Dict[str, Any]:
+          running: bool = True, scanners: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The document without its timestamp (written by StatusWriter)."""
     q = queue or {}
     return {
@@ -70,6 +80,7 @@ def build(machine_uuid: Optional[str], queue: Optional[Dict[str, Any]],
         "link": dict(link) if link else {"state": "not_enrolled"},
         "scan": dict(scan) if scan else None,
         "bound": list(bound or []),
+        "scanners": [dict(x) for x in scanners or []],
     }
 
 
@@ -206,6 +217,15 @@ def format_lines(doc: Optional[Dict[str, Any]], age: Optional[float], problem: s
     if bound:
         lines.append("  bound    : %s" % ", ".join(str(b.get("code", b)) if isinstance(b, dict) else str(b)
                                                 for b in bound))
+    for sc in doc.get("scanners") or []:
+        st = sc.get("state", "disconnected")
+        rate = sc.get("no_read_rate")
+        extra = "" if rate is None else ", no-read %.1f%% of %d" % (rate, sc.get("triggers", 0))
+        detail = (" — %s" % sc["detail"]) if sc.get("detail") else ""
+        lines.append("  scanner %s: %s%s%s  [%s]" % (sc.get("id", "?"), st, detail, extra,
+                                                    SCANNER_COLOUR.get(st, "grey")))
+        if sc.get("retune_suggested"):
+            lines.append("  scanner %s: needs tuning (run Scanner setup)  [amber]" % sc.get("id", "?"))
     q = doc.get("queue") or {}
     full = q.get("state") == "full"
     lines.append("  queue    : %d waiting to send%s" % (q.get("pending", 0),
