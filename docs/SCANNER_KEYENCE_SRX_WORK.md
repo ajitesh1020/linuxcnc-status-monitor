@@ -333,6 +333,34 @@ package 0 records, no-read string `ERROR`. Calibration step 8 sets it.
 
 Values are what the reader reports; nothing invented (`null` when unknown).
 
+### 4.6 Scanner CLI for MillWright (added by package 3)
+
+Added 28 Nov 2026 (additive; MillWright's wizard in package 4 uses it).
+`lcnc-status-agent … --json` prints one JSON object (`--scanner-test`: one
+per line, `{"type": "read" | "timeout" | "summary"}`); on failure exit code
+1 and `{"error": "<message>"}`.
+
+- `--scanner-enroll tcp://<ip>:9004 --name A [--force]` → `{scanner, host,
+  port, model, firmware, mac, serial: null, config, restart_agent: true}`.
+  The name is the config-key name (letters, digits, `_`).
+- `--scanner-info A`, `--scanner-test A [--count N]`, `--scanner-backup A`,
+  `--scanner-restore A FILE [--with-network]`, `--scanner-calibrate A` (text).
+- `--scanner-setup A <step> [args] [--owner millwright --pid <pid>]`, steps:
+  `lock`, `unlock`, `identify`, `network`, `network-set IP MASKBITS GW`,
+  `time-sync [SNTP_IP]` (reader clock set to UTC), `focus`, `codes BANK`,
+  `codes-set BANK TYPE,…`, `bank-name BANK NAME`, `tune BANK`, `tune-quit`,
+  `rate-test [N] [BANK]`, `output-check`, `output-fix`, `trigger-test`,
+  `save ANSWERS_JSON|-` (SAVE + backup + `calibration.json`; the answers are
+  the §4.5 fields the reader can't know: `by`, `distance_mm`, `angle_deg`,
+  `focus`, `symbologies`, `banks`, `test`), `image`, `factory-reset
+  --confirm --confirm`.
+- MillWright takes the lock once (`lock --owner millwright --pid <its pid>`),
+  passes the same `--owner/--pid` on every step, and `unlock`s at the end. A
+  lock whose pid is gone, or older than 2 h, is replaced.
+- Code types for `codes-set`: qr, datamatrix, pdf417, maxicode, gs1databar,
+  code39, itf, 2of5, nw7, ean_upc, code128, coop2of5, code93, cc_databar,
+  cc_ean_upc, cc_gs1_128, postal, pharmacode, dotcode, aztec.
+
 ## 5. Rules
 
 **Safety — this PC runs LinuxCNC** (as `docs/MES_LINUX_WORK.md` §3): never
@@ -390,10 +418,12 @@ follows the manual where it differs from section 1.1 / package 1 above.
 | `TEST1` / `QUIT` output | `TEST1[,bb]` → `OK,TEST1`; every 10 decodes `<data>:<bank>:<rate>%:<matching level>`. `QUIT` → `OK,QUIT` (table) or `OK` (text) | |
 | Settings read / write commands and the numbers used | `WP,m,n` → `OK,WP`; `RP,m` → `OK,RP,n` (operation); `WB`/`RB` bank; `WN`/`RN` communication; `WD`/`RD` region; `SAVE`, `LOAD`, `DFLT` (factory). Numbers: see manual 14-3 | |
 | Other bare `OK` / `ER` replies | `RESET`, `BCLR` | |
+| Setting numbers package 3 uses | WN 005 header (hex, FF none), 006 terminator (hex, 0D), 003 checksum, 004 data size, 200 IP, 201 mask bits, 202 gateway, 520 SNTP server; WP 101 timing (0 level / 1 one-shot), 205 no-read string (hex, FF none), 207 matching threshold (70), 302 symbol ID append, 300–310 / 370 other appended data; WB bb100 exposure, bb101 gain, bb300 code types (hex bits), bb625 bank name | |
+| Focus position over TCP | Not found: `FTUNE` reports only SUCCEEDED / FAILED | |
 | Concurrent TCP clients | Not stated for the command port (Web Tool: 5) | |
 | Behaviour on reboot / cable pull | Reader keepalive after 60 s idle, 2 retries 10 s apart | |
 | Command login | "Login authentication" off by default (user `admin`) | |
-| FTP login and image folder | Images `A:\IMAGE\…` (`SHOT` reply); FTP login not stated for the reader's own server | |
+| FTP login and image folder | Images `A:\IMAGE\…` (`SHOT` reply); the reader's FTP server is anonymous only (no SFTP server) | |
 | USB enumeration (optional) | | |
 
 ## Sources

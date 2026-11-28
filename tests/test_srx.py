@@ -159,16 +159,16 @@ class CommandTests(FakeBase):
         self.assertEqual((r.ok, r.error_code), (False, "00"))
 
     def test_settings_read_write_save_reset(self):
+        self.assertEqual(self.c.command("RP,101").fields, ["0"])
+        self.assertTrue(self.c.command("WP,101,1").ok)
         self.assertEqual(self.c.command("RP,101").fields, ["1"])
-        self.assertTrue(self.c.command("WP,101,2").ok)
-        self.assertEqual(self.c.command("RP,101").fields, ["2"])
         self.assertFalse(self.c.command("RP,999").ok)
         self.assertTrue(self.c.command("RESET").ok)              # unsaved change lost
         with self.assertRaises(srx.SrxConnectionError):
             self.c.read_line(1)
         self.assertFalse(self.c.connected)
         self.c.connect()
-        self.assertEqual(self.c.command("RP,101").fields, ["1"])
+        self.assertEqual(self.c.command("RP,101").fields, ["0"])
         self.c.command("WP,101,3")
         self.c.command("SAVE")
         self.c.command("RESET")
@@ -211,13 +211,13 @@ class CommandTests(FakeBase):
         self.assertEqual(self.c.command("ERRSTAT").fields, ["none"])
 
     def test_load_and_factory_defaults(self):
-        self.c.command("WP,101,2")
+        self.c.command("WP,101,1")
         self.c.command("LOAD")
-        self.assertEqual(self.c.command("RP,101").fields, ["1"])
-        self.c.command("WP,101,2")
+        self.assertEqual(self.c.command("RP,101").fields, ["0"])
+        self.c.command("WP,101,1")
         self.c.command("SAVE")
         self.c.command("DFLT")
-        self.assertEqual(self.c.command("RP,101").fields, ["1"])
+        self.assertEqual(self.c.command("RP,101").fields, ["0"])
 
     def test_bad_commands_refused_before_sending(self):
         for bad in ("", "LON\r", "A\nB", "LÖN"):

@@ -780,12 +780,87 @@ def _parse_args() -> argparse.Namespace:
         help="Print the MES readout (operator, last scan, queue, site link) the running agent "
              "writes to mes_status.json, then exit.",
     )
+    sc = parser.add_argument_group(
+        "scanners (Keyence SR-X on TCP; agent_scanner_cli.py)",
+        "Every command has --json for MillWright. Commands that talk to the reader take the scanner's "
+        "setup lock: the running agent hands the reader over and takes it back afterwards.")
+    sc.add_argument("--scanner-enroll", metavar="URL", help="enrol the reader at tcp://<ip>:9004 (with --name)")
+    sc.add_argument("--name", help="with --scanner-enroll: the scanner's name (letters, digits, _), e.g. A")
+    sc.add_argument("--force", action="store_true", help="with --scanner-enroll: accept a model that isn't an SR-X")
+    sc.add_argument("--scanner-info", metavar="NAME", help="model, address, state, last calibration")
+    sc.add_argument("--scanner-test", metavar="NAME", help="read codes without forwarding them")
+    sc.add_argument("--count", type=int, default=10, help="with --scanner-test: how many reads (default 10)")
+    sc.add_argument("--scanner-calibrate", metavar="NAME", help="the calibration wizard, in text")
+    sc.add_argument("--scanner-backup", metavar="NAME", help="save the reader's settings to a file")
+    sc.add_argument("--scanner-restore", nargs=2, metavar=("NAME", "FILE"),
+                    help="write a settings backup to the reader and SAVE (e.g. a replacement unit)")
+    sc.add_argument("--with-network", action="store_true",
+                    help="with --scanner-restore: also restore IP address, mask and gateway")
+    sc.add_argument("--scanner-setup", nargs="+", metavar=("NAME", "STEP"),
+                    help="one calibration step (for MillWright): lock, unlock, identify, network, "
+                         "network-set, time-sync, focus, codes, codes-set, bank-name, tune, tune-quit, "
+                         "rate-test, output-check, output-fix, trigger-test, save, image, factory-reset")
+    sc.add_argument("--owner", choices=("cli", "millwright"), default="cli",
+                    help="with --scanner-setup / --scanner-test: who holds the setup lock")
+    sc.add_argument("--pid", type=int, default=None, help="with --owner: the lock holder's process id")
+    sc.add_argument("--confirm", action="count", default=0, help="with factory-reset: give it twice")
+    sc.add_argument("--json", action="store_true", help="machine-readable output (MillWright)")
     parser.add_argument("--version", action="version",
                         version=f"lcnc-status-agent {AGENT_VERSION} (protocol {PROTOCOL_VERSION})")
     args = parser.parse_args()
     if args.discard_waiting and not args.mes_enroll:
         parser.error("--discard-waiting only goes with --mes-enroll")
+    if args.scanner_enroll and not args.name:
+        parser.error("--scanner-enroll needs --name")
+    if args.scanner_setup is not None and len(args.scanner_setup) < 2:
+        parser.error("--scanner-setup NAME STEP [ARGS...]")
     return args
+
+
+def _run_scanner(args: argparse.Namespace, cfg_path: Optional[str]) -> Optional[int]:
+    """The --scanner-* commands; None when none was given."""
+    import agent_scanner_cli as cli
+    import agent_srx
+    if not any(getattr(args, k, None) for k in ("scanner_enroll", "scanner_info", "scanner_test",
+                                                 "scanner_calibrate", "scanner_backup", "scanner_restore",
+                                                 "scanner_setup")):
+        return None
+    ctx = cli.Context(cfg_path, USER_CONFIG_DIR, load_raw_config(cfg_path))
+    try:
+        if args.scanner_enroll:
+            doc = cli.enroll(ctx, args.scanner_enroll, args.name, args.force)
+            if not args.json:
+                print(f"Enrolled scanner {doc['scanner']}: {doc['model']} at {doc['host']}:{doc['port']}, "
+                      f"MAC {doc['mac']} (written to {doc['config']}).")
+                print("Restart the agent to start reading:  systemctl --user restart lcnc-status-agent")
+                return 0
+        elif args.scanner_info:
+            doc = cli.info_cmd(ctx, args.scanner_info)
+        elif args.scanner_test:
+            for line in cli.test_cmd(ctx, args.scanner_test, args.count, args.owner, args.pid):
+                cli.emit_test_line(line, args.json)
+            return 0
+        elif args.scanner_calibrate:
+            doc = cli.calibrate(ctx, args.scanner_calibrate)
+            return 0 if doc.get("saved") else 1
+        elif args.scanner_backup:
+            doc = cli.backup(ctx, args.scanner_backup)
+        elif args.scanner_restore:
+            doc = cli.restore(ctx, args.scanner_restore[0], args.scanner_restore[1], args.with_network)
+        else:
+            name, action, *rest = args.scanner_setup
+            doc = cli.step(ctx, name, action, rest, args.owner, args.pid, args.confirm)
+    except (cli.CliError, agent_srx.SrxError, OSError) as exc:
+        if args.json:
+            cli.emit({"error": str(exc)}, True)
+        else:
+            print(f"lcnc-status-agent: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nstopped", file=sys.stderr)
+        return 130
+    cli.emit(doc, args.json)
+    return 0
 
 
 def _run_check(cfg_path: Optional[str], cfg: Dict[str, Any], machine_name: str) -> None:
@@ -900,6 +975,9 @@ def main() -> None:
         path = agent_mes_status.status_path(USER_CONFIG_DIR)
         print("\n".join(agent_mes_status.format_lines(*agent_mes_status.read(path))))
         return
+    rc = _run_scanner(args, cfg_path)
+    if rc is not None:
+        sys.exit(rc)
 
     # One agent per user: a second copy would double-count parts.
     lock = single_instance()

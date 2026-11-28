@@ -27,7 +27,7 @@ Commands:
   TEST1 / TEST2  OK,TEST1 then test_line every test_interval_s
                  (manual: "<data>:<bank>:<rate>%:<matching level>" per 10 decodes)
   QUIT           quit_reply ("OK,QUIT" per the manual's table)
-  RP/WP, RB/WB, RC/WC   read / write settings; unknown number -> ER,RP,02
+  RP/WP, RB/WB, RC/WC, RN/WN   read / write settings; unknown number -> ER,RP,02
   SAVE / LOAD    OK,SAVE / OK,LOAD (saved settings kept over RESET)
   DFLT           OK,DFLT, settings back to factory defaults (not saved)
   RESET          OK, then drops every connection; unsaved settings lost
@@ -58,12 +58,17 @@ from typing import Deque, Dict, Iterable, List, Optional
 
 TERMINATORS = {"cr": b"\r", "lf": b"\n", "crlf": b"\r\n"}
 
+# Factory values from the SR-X User's Manual 14-3 for the numbers the agent uses
 DEFAULT_SETTINGS = {
-    "RP": {"101": "1", "102": "0", "200": "ERROR", "300": "0"},
-    "RB": {"01100": "0010"},
+    "RP": dict({"101": "0", "102": "100", "205": "4552524F52", "207": "70", "302": "0"},
+               **{n: "0" for n in ("300", "301", "303", "304", "305", "306", "308", "309", "310", "370")}),
+    "RN": {"003": "0", "004": "0", "005": "FF", "006": "0D", "200": "192.168.100.100", "201": "24",
+           "202": "0.0.0.0", "520": "0.0.0.0"},
+    "RB": dict(kv for b in range(1, 17) for kv in (("%02d100" % b, "0010"), ("%02d101" % b, "10"),
+                                                     ("%02d300" % b, "11FFFF"), ("%02d625" % b, ""))),
     "RC": {"0100": "1000"},
 }
-WRITE_TO_READ = {"WP": "RP", "WB": "RB", "WC": "RC"}
+WRITE_TO_READ = {"WP": "RP", "WB": "RB", "WC": "RC", "WN": "RN"}
 
 
 class FakeSrx:
@@ -294,7 +299,7 @@ class FakeSrx:
             with self._lock:
                 self._testing = None
             self._reply(conn, self.quit_reply)
-        elif name in ("RP", "RB", "RC"):
+        elif name in ("RP", "RB", "RC", "RN"):
             store = self.settings[name]
             if len(args) != 1 or args[0] not in store:
                 self._reply(conn, "ER,%s,02" % name)
