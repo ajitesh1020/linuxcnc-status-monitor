@@ -150,6 +150,7 @@ class StatusLoopTests(unittest.TestCase):
             self.addCleanup(setattr, cycle_time_calculator, "time", cycle_time_calculator.time)
             cycle_time_calculator.time = clock
             status.load_config = lambda path: cfg
+            status.load_raw_config = lambda path: cfg      # scanner_<n>_* keys come from here
             status.find_config = lambda arg: None
             status._configure_logging = lambda dev, c: None
             status._parse_args = lambda: types.SimpleNamespace(
@@ -294,6 +295,15 @@ class StatusLoopTests(unittest.TestCase):
             self.assertEqual((p["mes_spool"]["state"], p["mes_spool"]["pending"]), ("ok", 0))
             self.assertGreater(p["mes_spool"]["bytes"], 0)
             self.assertEqual(p["mes_link"], {"state": "not_enrolled"})   # mes_service_url not set
+
+    def test_tcp_scanner_feature_with_contract_1_3(self):
+        # The reader is not reachable (port 9): the worker only has to exist.
+        _, packets, _ = self.run_agent([], mes_enabled=True, scanners="A", scanner_A_mode="tcp",
+                                       scanner_A_host="127.0.0.1", scanner_A_port=9,
+                                       scanner_A_mac="0001FC000001")
+        self.assertTrue(packets)
+        for p in packets:
+            self.assertEqual(p["features"], ["mes1", "scanner_tcp"])
 
     def _program(self):
         tmp = tempfile.TemporaryDirectory()

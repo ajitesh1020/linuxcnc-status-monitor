@@ -18,9 +18,10 @@
         "timeout",
         "control_chars",
         "disconnected",
-        "spool_full"
+        "spool_full",
+        "no_read"
       ],
-      "description": "spool_full (added in contract 1.1): the scan was read completely but the agent's MES spool is at its disk budget, so it was not stored; the operator panel shows it red. Consumers that do not know a reason keep the event as an unknown rejection."
+      "description": "no_read (added in contract 1.3): a network code reader was triggered but found no code (it sent its no-read string, e.g. ERROR); partial_len is 0. spool_full (added in contract 1.1): the scan was read completely but the agent's MES spool is at its disk budget, so it was not stored; the operator panel shows it red. Consumers that do not know a reason keep the event as an unknown rejection."
     },
     "partial_len": {
       "type": "integer",

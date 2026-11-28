@@ -142,14 +142,16 @@ connection to it (its own thread; never in the status sampling loop):
 
 - every read → `scan.received` in the spool (UTF-8 text, or base64 when it
   holds GS1 separators), stored before anything else is done;
-- the no-read string → shown red on the MES strip as *no read* (and, once the
-  MES contract 1.3 is installed, a `scan.rejected_local` `no_read` event);
+- the no-read string → shown red on the MES strip as *no read*, and a
+  `scan.rejected_local` `no_read` event (MES contract 1.3);
 - reads over 4096 bytes or with control characters are rejected and reported;
   more than 20 reads a second are dropped and counted;
 - **trigger `agent`**: MillWright asks for a read through
   `mw_data/scan_request.json`; the agent sends LON, waits up to 2 s, LOFF;
 - the connection comes back by itself (retry every 1 s up to every 60 s);
-  `scanner.state` events say connected / disconnected / error / setup;
+  `scanner.state` events say connected / disconnected / error / setup and
+  carry the model and firmware the reader reports (and `scanner_<n>_serial`
+  when set); status packets then list `scanner_tcp` in `features`;
 - the no-read rate over the last 100 triggers above `scanner_A_no_read_warn`
   shows **scanner needs tuning**.
 

@@ -40,16 +40,15 @@ def wait_for(cond, timeout=3.0):
     return cond()
 
 
-def contract_13(tmp):
-    """A copy of the vendored contract with the 1.3 additions (section 4.3), for
-    ContractFeatures only."""
-    d = os.path.join(tmp, "contract13")
+def contract_12(tmp):
+    """A copy of the vendored contract (1.3) with the 1.3 additions taken out, as
+    an agent built against contract 1.2 has it; for ContractFeatures only."""
+    d = os.path.join(tmp, "contract12")
     shutil.copytree(CONTRACT, d)
-    for name, edit in (("scan.rejected_local", lambda s: s["properties"]["reason"]["enum"].append("no_read")),
-                       ("scanner.state", lambda s: (s["properties"]["state"]["enum"].append("setup"),
-                                                    s["properties"].update(model={"type": "string"},
-                                                                           serial={"type": "string"},
-                                                                           firmware={"type": "string"})))):
+    for name, edit in (("scan.rejected_local", lambda s: s["properties"]["reason"]["enum"].remove("no_read")),
+                       ("scanner.state", lambda s: (s["properties"]["state"]["enum"].remove("setup"),
+                                                    [s["properties"].pop(k) for k in
+                                                     ("model", "serial", "firmware")]))):
         p = os.path.join(d, "events", name + ".schema.json")
         with open(p, encoding="utf-8") as f:
             s = json.load(f)
@@ -59,8 +58,14 @@ def contract_13(tmp):
     return d
 
 
+def _schema(type_):
+    with open(os.path.join(CONTRACT, "events", type_ + ".schema.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
 class FakeSpool:
-    """Records add() calls; full=True raises SpoolFull unless forced."""
+    """Records add() calls; full=True raises SpoolFull unless forced. Each payload
+    is checked against the vendored contract's schema, as the real spool does."""
 
     def __init__(self):
         self.events = []
@@ -70,6 +75,9 @@ class FakeSpool:
     def add(self, type_, payload, occurred, correlation=None, force=False):
         if self.full and not force:
             raise ms.SpoolFull("full")
+        errors = ms.contract().schema_errors(payload, _schema(type_))
+        if errors:
+            raise AssertionError("%s payload %r: %s" % (type_, payload, errors))
         with self.lock:
             self.events.append((type_, dict(payload), dict(correlation or {})))
         return len(self.events)
@@ -128,16 +136,20 @@ class ConfigTests(unittest.TestCase):
 
 
 class ContractFeatureTests(unittest.TestCase):
-    def test_vendored_contract_is_before_1_3(self):
+    def test_vendored_contract_is_1_3(self):
         f = st.ContractFeatures(CONTRACT)
+        self.assertTrue(f.v13)
+        self.assertEqual(f.state_fields, {"model", "serial", "firmware"})
+
+    def test_before_1_3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = st.ContractFeatures(contract_12(tmp))
         self.assertFalse(f.no_read or f.setup or f.v13)
         self.assertEqual(f.state_fields, set())
 
-    def test_1_3(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            f = st.ContractFeatures(contract_13(tmp))
-        self.assertTrue(f.v13)
-        self.assertEqual(f.state_fields, {"model", "serial", "firmware"})
+    def test_state_field_limits_match_schema(self):
+        props = _schema("scanner.state")["properties"]
+        self.assertEqual(st.STATE_FIELD_MAX, {k: props[k]["maxLength"] for k in st.STATE_FIELD_MAX})
 
     def test_missing_contract(self):
         self.assertFalse(st.ContractFeatures("/nonexistent").v13)
@@ -234,7 +246,7 @@ class WorkerBase(unittest.TestCase):
         os.makedirs(self.mw_data)
         self.fake = FakeSrx(codes=self.codes, mac=MAC).start()
         self.addCleanup(self.fake.stop)
-        self.features = st.ContractFeatures(contract_13(self.tmp.name) if self.v13 else CONTRACT)
+        self.features = st.ContractFeatures(CONTRACT if self.v13 else contract_12(self.tmp.name))
         self.spool = FakeSpool()
 
     def worker(self, start=True, **kw):
@@ -357,6 +369,13 @@ class Contract13Tests(WorkerBase):
         self.lock()
         self.assertTrue(wait_for(lambda: w.status["state"] == "setup"))
         self.assertEqual(self.spool.of("scanner.state")[-1]["state"], "setup")
+
+    def test_long_identity_is_cut_to_the_schema_limit(self):
+        self.fake.model, self.fake.firmware = "M" * 80, "F" * 80
+        w = self.worker(serial="S" * 200)
+        self.connected(w)
+        p = self.spool.of("scanner.state")[0]
+        self.assertEqual((len(p["model"]), len(p["firmware"]), len(p["serial"])), (64, 64, 128))
 
 
 class IdentityTests(WorkerBase):

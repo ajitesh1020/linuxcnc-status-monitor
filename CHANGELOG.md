@@ -14,6 +14,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `--scanner-calibrate`, `--scanner-backup`, `--scanner-restore` and
   `--scanner-setup` (used by MillWright's Scanner Setup wizard). See
   `docs/SCANNER_SRX.md`.
+- MES contract 1.3 vendored (FloorWatch e57b74f): no-reads are sent as
+  `scan.rejected_local` `no_read`, a reader held by a calibration tool as
+  `scanner.state` `setup`, and `scanner.state` carries the reader's model,
+  firmware and serial. Status packets list `scanner_tcp` in `features` when a
+  network reader is configured (PROTOCOL.md §4.9).
+
+### Fixed
+- `scanner.state` `model` and `firmware` are cut to the contract's 64
+  characters (were 128, which the spool would have refused).
 
 ## [1.9.0] - 2026-11-22
 

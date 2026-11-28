@@ -43,8 +43,9 @@ The worker:
     retune_suggested (rate above scanner_<n>_no_read_warn, once at least
     MIN_TRIGGERS_FOR_RATE triggers were seen).
 
-Contract 1.3 (no_read, setup, model/serial/firmware on scanner.state) is used
-only when the vendored contract has it (ContractFeatures). Before that: a
+Contract 1.3 (no_read, setup, model/serial/firmware on scanner.state; vendored
+from FloorWatch e57b74f) is used only when the vendored contract has it
+(ContractFeatures), so an agent built against an older copy still runs: a
 no-read is counted in the status but sends no event, and "setup" is sent as
 "disconnected" with a detail.
 """
@@ -84,6 +85,8 @@ REQUEST_FILE = "scan_request.json"
 MAX_REQUEST_FILE = 4096
 
 STATES = ("connected", "disconnected", "error", "setup")
+# scanner.state optional fields (contract 1.3) and their schema maxLength.
+STATE_FIELD_MAX = {"model": 64, "serial": 128, "firmware": 64}
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +168,7 @@ def scanner_configs(raw: Dict[str, Any]) -> Tuple[List[ScannerConfig], List[str]
 
 
 # ---------------------------------------------------------------------------
-# Contract features (1.3 is additive; use it only once vendored)
+# Contract features (1.3 is additive; read from the vendored schemas)
 # ---------------------------------------------------------------------------
 class ContractFeatures:
     def __init__(self, contract_dir: str):
@@ -536,7 +539,7 @@ class ScanWorker(threading.Thread):
         for k, v in (("model", self._info.get("model")), ("firmware", self._info.get("firmware")),
                      ("serial", self.cfg.serial or None)):
             if k in self.features.state_fields and v:
-                payload[k] = str(v)[:128]
+                payload[k] = str(v)[:STATE_FIELD_MAX[k]]
         self._add("scanner.state", payload, force=True)
         self._refresh_status()
 
