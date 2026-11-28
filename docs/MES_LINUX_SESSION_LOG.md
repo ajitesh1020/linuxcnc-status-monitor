@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 26 Nov 2026 (agent 1.9.0 installed from the release; fleet test with MES traffic A, gate policies, H1–H3, K, L exact; cycle gate checked on the machine with MillWright; netem B–G / J and the P2.7 impact runs not done).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Nov 2026 (Keyence SR-X100 scanner work, `docs/SCANNER_KEYENCE_SRX_WORK.md`: packages 1–3 done against a fake reader and merged (#64, #66, #67); the reader is not connected yet).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -18,7 +18,7 @@ The user merges, except millwright #1 and #2, merged by this session on 26 Oct a
 | F | Agent MES spool | `feat/mes-spool` | agent #22 | **Merged** 22 Oct |
 | G | Agent ↔ MillWright link | `feat/mes-millwright-link` | agent #23 | **Merged** 22 Oct; AXIS check **passed** 26 Oct |
 | H | `loop_lag_ms` | `feat/loop-lag` | agent #24 | **Merged** 22 Oct; impact runs **passed** 27 Oct (see below) |
-| I | Scanner adapters | — | — | Blocked: scanners not bought (user, 22 Oct) |
+| I | Scanner adapters | — | — | HID / serial not built. Scanner decided 28 Nov: **Keyence SR-X100 on TCP**, own plan `docs/SCANNER_KEYENCE_SRX_WORK.md` (section below) |
 | J | Enrolment + forwarder to the site service | `feat/mes-forwarder` → `main` | agent #26 | **Merged** (by the user, by 26 Oct); on the real agent 26 Oct; two-PC test **passed** 28 Oct (see below) |
 | K | Agent follows the site service to a new address | `feat/service-discovery` → `main` | agent #47 | **Merged** 28 Oct (by this session, user's OK); in **1.8.0**; 288 tests; step 6 (service moved to port 8444 on this PC) **passed** 13:08; Windows check after an address change **passed** 28 Oct 14:09, move back 14:18 (see below); `--check` fix after a move back: agent #51, in **1.8.1**; on 29 Oct 1.8.1 followed the service to .110 by itself (see below) |
 
@@ -597,6 +597,44 @@ avoided it only by draining by hand first. Options:
   state `dropped` and a reason (kept for the record, not sent). Same site, or nothing waiting: enrol as now. The
   code is not used when it refuses.
 
+## Keyence SR-X100 scanner (28 Nov)
+
+Plan: `docs/SCANNER_KEYENCE_SRX_WORK.md` (written by the Windows session). The reader is not connected yet, so
+packages 1–3 are built and tested against `tools/fake_srx.py`. The SR-X User's Manual (PDF in the repo root,
+git-ignored) was read and the code follows it where it differs from the plan: section 7 of the plan lists
+every point, to be confirmed by the spike.
+
+| # | Package | Branch → base | PR | State |
+|---|---|---|---|---|
+| 0 | Spike with the real reader | — | — | Waits for the reader to be wired |
+| 1 | `agent_srx.py` client + `tools/fake_srx.py` | `feat/srx-client` → `main` | agent #64 | **Merged** 28 Nov |
+| 2 | `agent_scan_tcp.py` production reading → spool | `feat/scan-tcp` → `main` | agent #65, #67 | **Merged** 28 Nov via #67 (#65 had merged into `feat/srx-client` *after* #64 merged it, so it missed `main`). Waits for contract 1.3 (feature check) |
+| 3 | CLI `--scanner-*` (enrol, info, test, calibrate, backup / restore, wizard steps) | `feat/scanner-cli` → `feat/scan-tcp` | agent #66 | **Merged** 28 Nov (into `feat/scan-tcp`, reached `main` with #67) |
+| 4 | MillWright Scanner setup wizard | — | — | Next |
+| 5 | Docs, packaging, network guide | — | — | Pending |
+| 6 | Acceptance with the real reader | — | — | Waits for the reader |
+
+Found and decided:
+- **No serial-number command on the SR-X** (manual). The user decided (28 Nov) to identify a unit by its MAC
+  (`EMAC`): new key `scanner_<n>_mac` (section 4.1 of the plan, interface change flagged in #64);
+  `scanner_<n>_serial` optional, typed from the label. The Windows session decides whether contract 1.3
+  carries `mac`.
+- Manual vs plan: `LON` / `LOFF` get no reply; `TUNE` / `TQUIT` / `RESET` / `BCLR` answer a bare `OK`;
+  `FTUNE` gives no focus position; the reader's FTP server is anonymous only.
+- Scan checks (FloorWatch plan P2.2): ≤ 4096 bytes, ≤ 20 scans/s (over: counted, logged, no event: the contract
+  has no reason), control characters rejected except GS / RS / EOT (GS1 data, sent as base64).
+- `mes_status.json` gains `scanners` (additive, `MES_LINUX_WORK.md` §4.7). The plan gains §4.6: the CLI that
+  MillWright's wizard calls.
+- Stacked PRs: merge each into `main` only after retargeting it; check `gh pr view` before building on one.
+
+Pending for the scanner:
+- Contract 1.3 from the Windows session (`no_read`, `setup`, `model` / `serial` / `firmware`), then re-vendor;
+  package 2 turns them on by itself.
+- When the reader arrives (the user wires it; ask before each physical step and before any change to this PC's
+  network): package 0 (fill the "Spike" column of section 7), then package 6.
+- After `--scanner-enroll`, restart the agent (`systemctl --user restart lcnc-status-agent`): config is read at
+  start.
+
 ## Contract gaps found
 
 - (Seen 27 Oct) A contract 1.1 service rejects contract 1.2 `atc_check` as `enum at payload/mode`, final. The
@@ -615,7 +653,7 @@ avoided it only by draining by hand first. Options:
    Still open: a trace of a Stop after the last M6 (15:48 case below).
 2. (Done 28 Oct) Two-PC J test; `G28` fix (agent #41) installed and checked. Watch for the
    `WAITING_FOR_IO` stall at the end of a run (seen once, 10:29); if it happens, note the AXIS message.
-3. **Package I:** say when the scanners are bought (plan §16 D1).
+3. (Decided 28 Nov: Keyence SR-X100) **Scanner:** wire the reader when it arrives (24 V supply, shop NIC or USB-Ethernet, never the Mesa NIC); then package 0.
 3b. (Done 28 Oct 14:09) **Package K Windows check:** install 1.8.0 (`sudo dpkg -i linuxcnc-status-agent_1.8.0_all.deb`), then restart the Windows PC so it gets a new address
    (or set a temporary static one), and tell me the new address.
 4. **Time sync** (still open 29 Oct): OFC_PC has no NTP (`timedatectl`: not synchronised, NTP service n/a), so every event has
