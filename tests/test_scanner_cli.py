@@ -454,6 +454,18 @@ class StatusEntryTests(Base):
         lines = [json.loads(x) for x in out.splitlines()]
         self.assertEqual((rc, [x["type"] for x in lines]), (0, ["read", "read", "summary"]))
 
+    def test_backup_and_restore_under_millwrights_lock(self):
+        pid = os.getppid()
+        cli.step(self.ctx(), "A", "lock", [], "millwright", pid)
+        rc, out = self.run_cli("--scanner-backup", "A", "--json")
+        self.assertEqual(rc, 1)                                             # someone else's lock
+        rc, out = self.run_cli("--scanner-backup", "A", "--owner", "millwright", "--pid", str(pid), "--json")
+        self.assertEqual(rc, 0)
+        path = json.loads(out)["file"]
+        rc, out = self.run_cli("--scanner-restore", "A", path, "--owner", "millwright", "--pid", str(pid), "--json")
+        self.assertEqual((rc, json.loads(out)["saved"]), (0, True))
+        self.assertTrue(os.path.exists(self.lock_file()))                  # still MillWright's
+
     def test_no_scanner_command(self):
         import status
         with mock.patch.object(sys, "argv", ["lcnc-status-agent"]):

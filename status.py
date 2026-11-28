@@ -801,7 +801,7 @@ def _parse_args() -> argparse.Namespace:
                          "network-set, time-sync, focus, codes, codes-set, bank-name, tune, tune-quit, "
                          "rate-test, output-check, output-fix, trigger-test, save, image, factory-reset")
     sc.add_argument("--owner", choices=("cli", "millwright"), default="cli",
-                    help="with --scanner-setup / --scanner-test: who holds the setup lock")
+                    help="with --scanner-setup / -test / -backup / -restore: who holds the setup lock")
     sc.add_argument("--pid", type=int, default=None, help="with --owner: the lock holder's process id")
     sc.add_argument("--confirm", action="count", default=0, help="with factory-reset: give it twice")
     sc.add_argument("--json", action="store_true", help="machine-readable output (MillWright)")
@@ -844,9 +844,10 @@ def _run_scanner(args: argparse.Namespace, cfg_path: Optional[str]) -> Optional[
             doc = cli.calibrate(ctx, args.scanner_calibrate)
             return 0 if doc.get("saved") else 1
         elif args.scanner_backup:
-            doc = cli.backup(ctx, args.scanner_backup)
+            doc = cli.backup(ctx, args.scanner_backup, args.owner, args.pid)
         elif args.scanner_restore:
-            doc = cli.restore(ctx, args.scanner_restore[0], args.scanner_restore[1], args.with_network)
+            doc = cli.restore(ctx, args.scanner_restore[0], args.scanner_restore[1], args.with_network,
+                              args.owner, args.pid)
         else:
             name, action, *rest = args.scanner_setup
             doc = cli.step(ctx, name, action, rest, args.owner, args.pid, args.confirm)
