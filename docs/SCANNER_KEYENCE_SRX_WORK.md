@@ -364,20 +364,27 @@ invent data. Contract copies are never edited (§4.3).
 
 ## 7. Spike results (fill in during package 0)
 
-| Question | Answer |
-|---|---|
-| Reply / data terminator | |
-| Header | |
-| No-read string | |
-| Symbology ID format | |
-| Model / firmware / serial command | |
-| `TUNE` / `TQUIT` / `FTUNE` replies, result format | |
-| `TEST1` / `QUIT` output | |
-| Settings read / write commands and the numbers used | |
-| Concurrent TCP clients | |
-| Behaviour on reboot / cable pull | |
-| FTP login and image folder | |
-| USB enumeration (optional) | |
+"Manual" = SR-X User's Manual (AS_162851, chapters 11, 13, 14), read during
+package 1; the spike confirms or corrects every line. Package 1 already
+follows the manual where it differs from section 1.1 / package 1 above.
+
+| Question | Manual | Spike |
+|---|---|---|
+| Reply / data terminator | Replies end in CR (commands may end in CR or CR LF, or STX…ETX). Read data: header none / STX / ESC, terminator CR (default) / CR LF / ETX, or any string ≤ 5 chars | |
+| Header | None by default | |
+| No-read string | `ERROR` by default; any string ≤ 32 chars, or not sent | |
+| Symbology ID format | AIM ID **before** the data (`]d1…`, `]Q1…`), not on a no-read. "Code type" number is a separate option, joined by the delimiter `:` | |
+| Model / firmware / serial command | `KEYENCE` → `OK,KEYENCE,<model>,<version>`. **No serial-number command**; `EMAC` → `OK,EMAC,<MAC>` (12 hex). **Needs a decision on §4.1 `scanner_<n>_serial`** | |
+| Replies to LON / LOFF | **None** (also PRON / PROFF), even on error, unless "Basic command response string" is set: the reply rule in package 1 changes accordingly | |
+| `TUNE` / `TQUIT` / `FTUNE` replies, result format | `TUNE,bb` → `OK`, later `Tuning SUCCEEDED,<t>ms,00000x00` / `Tuning FAILED,<t>ms,00000x0y` (x advice 0/1/2/4, y reason 1 no code / 2 unstable). `TQUIT` → `OK`. `FTUNE` → `OK,FTUNE`, later `Focus Tuning SUCCEEDED` / `FAILED` (saved to ROM) | |
+| `TEST1` / `QUIT` output | `TEST1[,bb]` → `OK,TEST1`; every 10 decodes `<data>:<bank>:<rate>%:<matching level>`. `QUIT` → `OK,QUIT` (table) or `OK` (text) | |
+| Settings read / write commands and the numbers used | `WP,m,n` → `OK,WP`; `RP,m` → `OK,RP,n` (operation); `WB`/`RB` bank; `WN`/`RN` communication; `WD`/`RD` region; `SAVE`, `LOAD`, `DFLT` (factory). Numbers: see manual 14-3 | |
+| Other bare `OK` / `ER` replies | `RESET`, `BCLR` | |
+| Concurrent TCP clients | Not stated for the command port (Web Tool: 5) | |
+| Behaviour on reboot / cable pull | Reader keepalive after 60 s idle, 2 retries 10 s apart | |
+| Command login | "Login authentication" off by default (user `admin`) | |
+| FTP login and image folder | Images `A:\IMAGE\…` (`SHOT` reply); FTP login not stated for the reader's own server | |
+| USB enumeration (optional) | | |
 
 ## Sources
 
