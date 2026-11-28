@@ -189,6 +189,7 @@ class SrxClient:
         self._data: Deque[bytes] = collections.deque()
         self._late: Deque[str] = collections.deque(maxlen=8)   # timed-out commands: their reply may still come
         self.overlong = 0                # lines dropped for length
+        self.last_overlong_len = 0       # bytes held of the last one (at least; it may have been longer)
         self.dropped = 0                 # read-data lines dropped because the queue was full
         self.partial = 0                 # half lines lost to a disconnect
 
@@ -337,6 +338,7 @@ class SrxClient:
                 continue
             if len(line) > self.max_line:
                 self.overlong += 1
+                self.last_overlong_len = len(line)
                 logger.warning("srx %s: dropped a %d-byte line (limit %d)", self.host, len(line), self.max_line)
                 continue
             lines.append(line)
@@ -346,6 +348,7 @@ class SrxClient:
         if len(self._buf) > self.max_line + n:
             if not self._skipping:
                 self.overlong += 1
+                self.last_overlong_len = len(self._buf)
                 logger.warning("srx %s: dropped an overlong line (limit %d)", self.host, self.max_line)
             self._skipping = True
             keep = n - 1
