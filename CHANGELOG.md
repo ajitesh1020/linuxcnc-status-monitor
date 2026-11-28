@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-11-28
+
 ### Added
 - Keyence SR-X code reader on Ethernet (TCP 9004): every read becomes an MES
   `scan.received` event; `scanner.state` events; no-read rate and "needs
