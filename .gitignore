@@ -14,3 +14,7 @@ venv/
 
 # Built packages (packaging/deb/build.sh)
 dist/
+
+# Keyence manuals kept next to the repo (Keyence copyright, never committed)
+AS_*_SR-X_*.pdf
+*SR-X*Manual*.pdf
