@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Nov 2026 (Keyence SR-X100 scanner work, `docs/SCANNER_KEYENCE_SRX_WORK.md`: packages 1–3 done against a fake reader and merged (#64, #66, #67); the reader is not connected yet).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Nov 2026 (Keyence SR-X100 scanner work, `docs/SCANNER_KEYENCE_SRX_WORK.md`: packages 1–4 done against a fake reader and merged (agent #64, #66, #67, #68; MillWright #20), package 5 docs in review; the reader is not connected yet).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -610,8 +610,8 @@ every point, to be confirmed by the spike.
 | 1 | `agent_srx.py` client + `tools/fake_srx.py` | `feat/srx-client` → `main` | agent #64 | **Merged** 28 Nov |
 | 2 | `agent_scan_tcp.py` production reading → spool | `feat/scan-tcp` → `main` | agent #65, #67 | **Merged** 28 Nov via #67 (#65 had merged into `feat/srx-client` *after* #64 merged it, so it missed `main`). Waits for contract 1.3 (feature check) |
 | 3 | CLI `--scanner-*` (enrol, info, test, calibrate, backup / restore, wizard steps) | `feat/scanner-cli` → `feat/scan-tcp` | agent #66 | **Merged** 28 Nov (into `feat/scan-tcp`, reached `main` with #67) |
-| 4 | MillWright Scanner setup wizard | — | — | Next |
-| 5 | Docs, packaging, network guide | — | — | Pending |
+| 4 | MillWright Scanner setup wizard (Tools → Scanner Setup…) + agent `--owner/--pid` for backup / restore | `feat/scanner-setup` → `main` (MillWright); `feat/scanner-cli-owner` → `main` | MillWright #20, agent #68 | **Merged** 28 Nov |
+| 5 | Docs: `docs/SCANNER_SRX.md`, config keys, NETWORK / TROUBLESHOOTING, CHANGELOG; MillWright user manual | `docs/scanner-srx` → `main`; MillWright `docs/scanner-setup` → `main` | (open) | In review (packaging needed nothing: the .deb already ships the three modules since #64/#66, MillWright's copies the whole package) |
 | 6 | Acceptance with the real reader | — | — | Waits for the reader |
 
 Found and decided:

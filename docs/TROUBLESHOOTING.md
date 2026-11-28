@@ -115,6 +115,12 @@ fetch that time later:
 
 ---
 
+## Code reader (scanner) problems
+
+See the troubleshooting table in [`SCANNER_SRX.md`](SCANNER_SRX.md#troubleshooting):
+`disconnected`, `scanner replaced`, `not enrolled`, a long `setup`, many no-reads.
+`lcnc-status-agent --scanner-info <name>` shows the state and the last calibration.
+
 ## Log files
 
 Warnings and errors (network, journal, history server), at most once a minute

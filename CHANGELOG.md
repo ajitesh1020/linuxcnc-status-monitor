@@ -6,6 +6,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- Keyence SR-X code reader on Ethernet (TCP 9004): every read becomes an MES
+  `scan.received` event; `scanner.state` events; no-read rate and "needs
+  tuning"; the unit is identified by its MAC (`scanner_<n>_mac`). Commands
+  `--scanner-enroll`, `--scanner-info`, `--scanner-test`,
+  `--scanner-calibrate`, `--scanner-backup`, `--scanner-restore` and
+  `--scanner-setup` (used by MillWright's Scanner Setup wizard). See
+  `docs/SCANNER_SRX.md`.
+
 ## [1.9.0] - 2026-11-22
 
 ### Added
