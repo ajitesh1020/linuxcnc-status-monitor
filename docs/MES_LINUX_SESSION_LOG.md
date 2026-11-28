@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 29 Oct 2026 (ATC Run From Here fix #55 released in v1.8.2 pre-release and checked on the machine; the agent followed the Windows service to a third address, 192.168.0.110).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 26 Nov 2026 (agent 1.9.0 installed from the release; fleet test with MES traffic A, gate policies, H1–H3, K, L exact; cycle gate checked on the machine with MillWright; netem B–G / J and the P2.7 impact runs not done).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -420,6 +420,75 @@ and `check --mes-db / --mes-url`, profiles `tools/fleet_sim_profiles.json`, test
   on the readout (feedback endpoint); without that wait the in-process run had 984 mismatches.
 - Not done: netem scenarios A–L with `--mes` on the LinuxCNC PC (FLEET_TEST.md §7 says how).
 
+## Agent 1.9.0 on the LinuxCNC PC: update and MES checks (22–26 Nov)
+
+**Versions.** Agent `main` 767d27f = tag `v1.9.0` (`AGENT_VERSION` 1.9.0). MillWright `main` 8cfd92b (cycle gate,
+millwright #18; newer than v0.10.0). FloorWatch: Windows PC **v2.0.0-rc.4** (afb4eee); the local site service
+for the fleet test from `main` 630beb7. OFC_PC: i3-4170, kernel 6.1.0-56-rt-amd64, LinuxCNC 2.9.10,
+`test_config` (base 30 µs, servo 1 ms).
+
+**Update.**
+- `linuxcnc-status-agent_1.9.0_all.deb` + `SHA256SUMS` from the v1.9.0 release into an empty folder,
+  `sha256sum -c`: OK; installed by the user with `sudo apt install ./…` (sudo needs a password here).
+  `--version` 1.9.0, user service active, `--check` exit 0.
+- MillWright installed into `test_config` with `millwright install test_config --yes` (backup
+  20261122-192533; new `mw_panels/mw_gate.py`). `python3 -m unittest tests.test_cycle_gate tests.test_mes_strip`
+  runs **0 tests** (pytest files, no `tests/__init__.py`); `python3 -m pytest tests/test_cycle_gate.py
+  tests/test_cycle_gate_hal.py tests/test_mes_strip.py`: **170 passed**.
+- Agent `python3 -m unittest discover -s tests`: 365 OK, **11 skipped** — not Windows-only: they need a
+  FloorWatch / MillWright checkout. With `FLOORWATCH_DIR` / `FLOORWATCH_SRC` (FloorWatch `main` 630beb7) and
+  `MILLWRIGHT_DIR`: **365 passed, 0 skipped**.
+
+**Link to the site service.** The agent was already enrolled (site cb6a4a6c…). The Windows PC was first on
+another network (192.168.1.6), then on 192.168.0.104 and on 26 Nov 192.168.0.110; the agent followed by itself
+(`MES service moved: https://192.168.0.104:8443 -> https://192.168.0.110:8443 (probe)` 26 Nov 10:24:25).
+`--mes-status`: link ok, queue 0.
+- `mw_data/cycle_gate.json` did **not** appear at first: the service's feedback had no `order` /
+  `cycle_gate` and `/v1/admin/execution-settings` answered 404. The Windows PC's FloorWatchService was still a
+  pre-Phase-5 build although the desktop was rc.4 (a restart did not help; fixed on the Windows side).
+  `/v1/health` says `version: "0.1.0"` for both builds, so it cannot tell them apart.
+- After the fix: after an agent restart a new verdict in **0.6 s**; `fetched_at_ms` every **~16.0 s**
+  (+16021 / 16024 / 16028 / 16017 ms); schema `lcnc-agent.cycle_gate/1`.
+
+**Fleet test with MES traffic** (FLEET_TEST.md §7, local site service on 127.0.0.1:8443): A, cycle gate
+policies, H1, H2, H3, K, L all **exact** (figures in FLEET_TEST.md "Record (MES)"). B–G and J (netem) **not
+run**: `tc` needs root, the user chose to skip them. Finding for FloorWatch: on Linux the service cannot bind
+its port for ~60 s after a stop (`allow_reuse_address = False`), seen in every H run.
+
+**Cycle gate on the machine with MillWright** (P5.5 / P4.6; `[MW_MES] CYCLE_GATE = enforce` added to
+`test_config.ini`, backup `test_config.ini.before-cycle-gate-20261125`; the site policy set from the
+FloorWatch desktop by the user). The PC has no hardware connected (`NO_FORCE_HOMING = 1`), nothing moves.
+Machine log = `mw_data/millwright.db` `audit_events`:
+
+| Step | Result | Log |
+|---|---|---|
+| MES strip shows the job-check line | **pass** (user) | — |
+| enforce, nothing bound: Run | **pass**: "Not allowed", nothing moved (user) | row 546 `job/run_refused`, `gate: true`, policy / server_policy enforce, age 6.6 s, reasons `no_order`, `nothing_bound` |
+| External Cycle Start button | **skipped**: no external button configured (`ext_buttons` not installed); only the unit tests cover it | — |
+| Dry run not checked | **pass**: ran 518.7 s under enforce, no gate event | row 578 `job/run` mode `dry run` |
+| Frame not checked | **not tested**: `frame` feature not installed in `test_config` | — |
+| advisory: warning, start goes ahead | **pass** | row 582 `job/gate_warned` advisory (age 11.6 s); row 583 run started the same second (14:44:34) |
+| agent stopped > 120 s under enforce: warns, not blocked | **pass** | row 602 `job/gate_warned`, `verdict: stale`, age 776.8 s, reason `verdict_stale`; program started |
+
+Notes:
+- A dry run needs the machine homed, and this PC cannot home (no switches): for that step homing was faked
+  (`HOME_SEARCH_VEL` / `HOME_LATCH_VEL` = 0 on joints 0–2, backup `test_config.ini.before-fake-homing-20261126`),
+  then **restored** (the faked file kept as `test_config.ini.with-fake-homing-20261126`).
+- Row 541: a normal run started at 13:30:36, one second after the site switched to enforce (13:30:35); the
+  agent's next poll had not come yet, so MillWright still had `off` and let it start. Correct, not part of
+  the test.
+- Twice a policy change "set" in the desktop did not reach the service (25 Nov enforce, 26 Nov advisory); it
+  took effect when an integration admin saved it in MES → Measured metrics → Settings…. Passed to the
+  Windows session to check.
+- After an abort AXIS logged `can't do that (EMC_TASK_PLAN_SYNCH) in auto mode with the interpreter idle`
+  (rows 579, 581).
+- Every LinuxCNC start logs `Unexpected realtime delay on task 0 with period 30000` (base thread).
+- The site policy was left at **enforce**; the Windows session was asked to put it back (it was `off`).
+
+**Controller impact, agent on / off (P2.7, bench test §6): not done.** A recorder (tmax reset / read,
+agent and PC CPU and disk writes, `loop_lag_ms` from the status packets) was prepared, but the runs were not
+started before the user asked for this record.
+
 ## H impact runs (27 Oct)
 
 OFC_PC: Intel i3-4170 3.70 GHz, kernel 6.1.0-53-rt-amd64, LinuxCNC 2.9.10 (POSIX realtime), AXIS with
@@ -553,6 +622,12 @@ avoided it only by draining by hand first. Options:
    `clock.synced: false`; `agent.log` has a line dated 2026-04-28 from before the clock was set at boot.
    Pilot PCs need time sync.
 5. (Done 27 Oct) H impact runs; version 1.7.0.
+6. (26 Nov) **P2.7 controller impact with agent 1.9.0**: alternate agent on / off runs (several each) of
+   one program, `loop_lag_ms` p50 / p99 / max, CPU, disk writes; needs the machine running.
+7. (26 Nov) **Fleet netem B–G, J with `--mes`** (FLEET_TEST.md §7): needs root for `tc` on this PC.
+8. (26 Nov) **Cycle gate, external button and frame**: configure `ext_buttons` (and the button) and the
+   `frame` feature in `test_config`, then check that neither starts / is checked as specified.
+9. (26 Nov) `test_config` keeps `[MW_MES] CYCLE_GATE = enforce`; the site policy was left at enforce.
 
 ## Pending — this session
 
