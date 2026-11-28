@@ -130,6 +130,7 @@ import agent_mes_link
 import agent_mes_discovery
 import agent_mes_forward
 import agent_mes_status
+import agent_scan_tcp
 import queue
 from agent_packets import LoopLag, PacketGate, fault_signature
 from agent_runtime import (USER_CONFIG_DIR, LinuxCNCWatch, find_config, readable_by_others,
@@ -179,6 +180,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "mes_millwright_config":     "",              # LinuxCNC config dir holding MillWright's mw_data/ ("" = no MillWright)
     "mes_service_url":           "",              # site service, e.g. https://10.0.0.5:8443 ("" = not enrolled: nothing forwarded)
     "mes_discovery_port":        5007,            # UDP port to find the service on after it moves (0 = never look)
+    "scanners":                  "",              # comma list of enrolled scanners; their scanner_<n>_* keys: agent_scan_tcp.py
 }
 
 JOURNAL_RESTART_S: float = 60.0   # retry a stopped journal server this often
@@ -235,6 +237,24 @@ def _parse_flat_yaml(text: str) -> Dict[str, Any]:
                 except ValueError:
                     out[key] = val
     return out
+
+
+def load_raw_config(path: Optional[str]) -> Dict[str, Any]:
+    """The config file as loaded, every key (scanner_<n>_* keys are not in
+    DEFAULT_CONFIG); {} when there is no readable, parseable file."""
+    if not path or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        try:
+            import yaml  # type: ignore
+            loaded = yaml.safe_load(text) or {}
+        except ImportError:
+            loaded = _parse_flat_yaml(text)
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def load_config(path: Optional[str]) -> Dict[str, Any]:
@@ -1045,6 +1065,15 @@ def main() -> None:
             mes_spool, cfg["mes_service_url"], agent_mes_forward.mes_dir(USER_CONFIG_DIR), machine_uuid,
             finder=finder, on_feedback=gate_writer)
         mes_forwarder.start()
+    # TCP scanners (agent_scan_tcp.py, Keyence SR-X): one thread each; the
+    # loop never touches them.
+    scan_workers: List[agent_scan_tcp.ScanWorker] = []
+    scan_features: List[str] = []
+    if mes_spool:
+        scan_workers = agent_scan_tcp.start_workers(
+            load_raw_config(cfg_path), mes_spool, USER_CONFIG_DIR, mw_data, agent_mes_spool.CONTRACT_DIR)
+        if scan_workers and scan_workers[0].features.v13:
+            scan_features = ["scanner_tcp"]
     # Operator readout (agent_mes_status.py, MES plan P2.6): own thread writes
     # mes_status.json from the status dicts above; no I/O in the loop.
     mes_status_writer = None
@@ -1055,7 +1084,9 @@ def main() -> None:
             return agent_mes_status.build(
                 machine_uuid, mes_spool.stats,
                 mes_forwarder.status if mes_forwarder else None,
-                reader.operator if reader else None)
+                reader.operator if reader else None,
+                scan=agent_scan_tcp.last_scan(scan_workers),
+                scanners=[w.status for w in scan_workers] if scan_workers else None)
         mes_status_writer = agent_mes_status.StatusWriter(mes_status_file, _mes_status_doc)
         mes_status_writer.start()
     else:
@@ -1322,7 +1353,7 @@ def main() -> None:
             payload["loop_lag_ms"] = lag
         payload["mes_spool"] = dict(mes_spool.stats) if mes_spool else agent_mes_spool.status_off()
         if mes_spool:
-            payload["features"] = ["mes1"]
+            payload["features"] = ["mes1"] + scan_features
         if mes_forwarder:
             payload["mes_link"] = dict(mes_forwarder.status)
         journal.record(payload, now)
@@ -1367,6 +1398,8 @@ def main() -> None:
         mes_link.end("unknown")        # stored by the worker before it stops
     journal_srv.stop()
     journal.close()
+    for w in scan_workers:
+        w.stop()
     if mes_status_writer:
         mes_status_writer.stop()                  # last write: running = false
     if mes_forwarder:
