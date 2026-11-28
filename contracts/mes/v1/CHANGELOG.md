@@ -5,6 +5,21 @@ types, new values in an enum that consumers already treat as "unknown → keep".
 Anything that would make an old event invalid, or change the meaning of a
 field, goes into `contracts/mes/v2/`.
 
+## 1.3 — network code readers (MES plan P2.1: Keyence SR-X100 over TCP)
+
+- `scan.rejected_local` reason `no_read`: a network code reader was triggered
+  but found no code (it sent its no-read string). `partial_len` is 0.
+- `scanner.state` state `setup`: a calibration tool (MillWright's Scanner
+  setup, or the agent's `--scanner-calibrate`) owns the reader; the agent reads
+  nothing from it until it is released.
+- `scanner.state` optional `model`, `serial`, `firmware`: what a network reader
+  reports about itself (USB scanners keep `usb`).
+- Not in this contract, for the record: agents with a TCP scanner add
+  `scanner_tcp` to `features` in their status packets (agent PROTOCOL.md).
+- Additive: consumers keep an unknown reason or state as unknown; the site
+  service holds such events as `newer_contract` until it is updated.
+- Plan: agent repo `docs/SCANNER_KEYENCE_SRX_WORK.md`.
+
 ## 1.2 — `atc_check` run mode
 
 - `execution.started` mode `atc_check`: an ATC tool pick/drop check run
