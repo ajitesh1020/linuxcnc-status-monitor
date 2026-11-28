@@ -121,6 +121,9 @@ so nothing needs to change when the office PC's address changes.
   NML message text only with `read_error_channel: true` (see CONFIGURATION.md)
 - **Fault-tolerant** — every LinuxCNC call guarded; a separate process that only
   reads status
+- **Code readers** (MES) — Keyence SR-X on Ethernet: every read into the MES
+  spool, calibrated from MillWright's Scanner Setup; see
+  [`docs/SCANNER_SRX.md`](docs/SCANNER_SRX.md)
 
 ---
 
@@ -154,7 +157,7 @@ linuxcnc-status-monitor/
 ├── config.example.yaml        # Settings template
 ├── PROTOCOL.md                # Normative UDP wire protocol (agent ↔ dashboard)
 ├── packaging/                 # .deb build script, user service, wrapper
-├── docs/                      # CONFIGURATION, NETWORK, TROUBLESHOOTING
+├── docs/                      # CONFIGURATION, NETWORK, TROUBLESHOOTING, SCANNER_SRX
 ├── examples/udp_receiver.py   # Minimal receiver for testing on any PC
 └── tests/                     # python3 -m unittest discover -s tests
 ```

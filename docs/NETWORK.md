@@ -136,6 +136,22 @@ This follows defense-in-depth practice (e.g. CISA's ICS recommended practices);
 it is not a compliance claim. For untrusted or shared networks, authenticated
 per-device messages with encryption are still to come (MES plan Phase 2).
 
+## Code readers on Ethernet (Keyence SR-X)
+
+The agent connects to each enrolled reader (`scanner_<n>_host`, TCP port 9004;
+images over FTP, port 21) and nothing connects to the agent: no firewall
+change is needed on the LinuxCNC PC.
+
+- **Never put a reader on a network card used by LinuxCNC hardware** (Mesa
+  `hm2_eth`): the Mesa link needs its card to itself. Use the shop /
+  monitoring network card or a USB-Ethernet adapter used only for readers.
+- Give each reader a **static address** on that network (out of the box
+  192.168.100.100/24). To reach a new reader once, add a temporary address on
+  its subnet (`sudo ip addr add 192.168.100.1/24 dev <card>`, gone at reboot)
+  instead of changing the PC's network settings. See `docs/SCANNER_SRX.md`.
+- On a restricted network (above), allow the LinuxCNC PC outbound TCP 9004
+  (and 21 for images) to the readers' addresses only.
+
 ## Windows firewall (dashboard PC)
 
 The first time the dashboard runs, Windows asks whether to allow it on

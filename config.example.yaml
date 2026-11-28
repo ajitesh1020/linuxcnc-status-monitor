@@ -101,6 +101,19 @@ mes_service_url: ""
 # as written. 0 = never look.
 mes_discovery_port: 5007
 
+# Keyence SR-X code readers on Ethernet (docs/SCANNER_SRX.md). Needs
+# mes_enabled. Written by
+#   lcnc-status-agent --scanner-enroll tcp://<reader>:9004 --name A
+# then restart the agent. Per scanner <n> in `scanners`:
+#   scanner_<n>_mode: "tcp"            scanner_<n>_host: "192.168.10.50"
+#   scanner_<n>_port: 9004             scanner_<n>_mac: "0001FC123456"  (the unit's identity)
+#   scanner_<n>_serial: ""             scanner_<n>_model: "SR-X100"
+#   scanner_<n>_trigger: "reader"      reader (button / auto-read) | agent (MillWright asks)
+#   scanner_<n>_no_read: "ERROR"       scanner_<n>_terminator: "cr"   (cr | lf | crlf)
+#   scanner_<n>_max_len: 4096          scanner_<n>_no_read_warn: 5    (% -> "needs tuning")
+#   scanner_<n>_pass_rate: 98          (% for the calibration test)
+scanners: ""                # e.g. "A"; "" = no scanner
+
 # Also read LinuxCNC's NML error channel to send error message text.
 # Leave false: each message read here is REMOVED, so the operator's screen
 # (AXIS, QtDragon, Gmoccapy...) may never show it. E-stop, execution errors,
