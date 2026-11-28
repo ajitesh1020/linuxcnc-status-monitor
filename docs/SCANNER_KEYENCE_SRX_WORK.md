@@ -274,7 +274,8 @@ scanners: "A"                         # comma list of enrolled scanners
 scanner_A_mode: "tcp"                 # new: tcp (besides hid | serial)
 scanner_A_host: "192.168.100.100"
 scanner_A_port: 9004
-scanner_A_serial: ""                  # written by --scanner-enroll
+scanner_A_mac: ""                     # written by --scanner-enroll: the unit's identity (EMAC)
+scanner_A_serial: ""                  # optional, typed from the label; the reader can't report it
 scanner_A_model: ""                   # written by --scanner-enroll
 scanner_A_trigger: "reader"           # reader | agent
 scanner_A_no_read: "ERROR"
@@ -283,6 +284,15 @@ scanner_A_max_len: 4096
 scanner_A_no_read_warn: 5             # % over the last 100 triggers
 scanner_A_pass_rate: 98               # % for the calibration test
 ```
+
+Changed 28 Nov 2026 (user's decision, package 1 PR): the SR-X has no
+serial-number command, so the unit is identified by its MAC address
+(`EMAC`). `scanner_<n>_mac` is new; the "scanner replaced" check (package 2)
+and `--scanner-enroll` (package 3) use it instead of the serial. Where this
+document says "serial" for that check, read "MAC". On `scanner.state` the
+optional `serial` is sent only when `scanner_<n>_serial` was typed in,
+otherwise `null`; whether contract 1.3 also carries `mac` is the Windows
+session's call.
 
 ### 4.2 Files (all in `~/linuxcnc-monitor-agent/scanner/`, atomic writes)
 
@@ -374,7 +384,7 @@ follows the manual where it differs from section 1.1 / package 1 above.
 | Header | None by default | |
 | No-read string | `ERROR` by default; any string ≤ 32 chars, or not sent | |
 | Symbology ID format | AIM ID **before** the data (`]d1…`, `]Q1…`), not on a no-read. "Code type" number is a separate option, joined by the delimiter `:` | |
-| Model / firmware / serial command | `KEYENCE` → `OK,KEYENCE,<model>,<version>`. **No serial-number command**; `EMAC` → `OK,EMAC,<MAC>` (12 hex). **Needs a decision on §4.1 `scanner_<n>_serial`** | |
+| Model / firmware / serial command | `KEYENCE` → `OK,KEYENCE,<model>,<version>`. **No serial-number command**; `EMAC` → `OK,EMAC,<MAC>` (12 hex). Decided: unit identity = MAC, `scanner_<n>_mac` (§4.1) | |
 | Replies to LON / LOFF | **None** (also PRON / PROFF), even on error, unless "Basic command response string" is set: the reply rule in package 1 changes accordingly | |
 | `TUNE` / `TQUIT` / `FTUNE` replies, result format | `TUNE,bb` → `OK`, later `Tuning SUCCEEDED,<t>ms,00000x00` / `Tuning FAILED,<t>ms,00000x0y` (x advice 0/1/2/4, y reason 1 no code / 2 unstable). `TQUIT` → `OK`. `FTUNE` → `OK,FTUNE`, later `Focus Tuning SUCCEEDED` / `FAILED` (saved to ROM) | |
 | `TEST1` / `QUIT` output | `TEST1[,bb]` → `OK,TEST1`; every 10 decodes `<data>:<bank>:<rate>%:<matching level>`. `QUIT` → `OK,QUIT` (table) or `OK` (text) | |
