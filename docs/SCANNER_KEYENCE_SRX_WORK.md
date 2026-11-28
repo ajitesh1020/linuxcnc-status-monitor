@@ -345,6 +345,8 @@ per line, `{"type": "read" | "timeout" | "summary"}`); on failure exit code
   The name is the config-key name (letters, digits, `_`).
 - `--scanner-info A`, `--scanner-test A [--count N]`, `--scanner-backup A`,
   `--scanner-restore A FILE [--with-network]`, `--scanner-calibrate A` (text).
+  `--owner` / `--pid` also go with `--scanner-test`, `--scanner-backup` and
+  `--scanner-restore` (run under MillWright's lock).
 - `--scanner-setup A <step> [args] [--owner millwright --pid <pid>]`, steps:
   `lock`, `unlock`, `identify`, `network`, `network-set IP MASKBITS GW`,
   `time-sync [SNTP_IP]` (reader clock set to UTC), `focus`, `codes BANK`,
