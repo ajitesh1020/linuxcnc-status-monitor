@@ -1,7 +1,7 @@
 # MES plan, Linux side — session log
 
 What the Claude Code session on the LinuxCNC PC has implemented for
-`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Nov 2026 (Keyence SR-X100 scanner work, `docs/SCANNER_KEYENCE_SRX_WORK.md`: packages 1–4 done against a fake reader and merged (agent #64, #66, #67, #68; MillWright #20), package 5 docs: agent #70 merged, MillWright #21 in review; contract 1.3 vendored (FloorWatch #85, e57b74f) on agent `feat/contract-1.3`; the reader is not connected yet).
+`docs/MES_LINUX_WORK.md`, and what is still pending. Last updated 28 Nov 2026 (Keyence SR-X100 scanner work, `docs/SCANNER_KEYENCE_SRX_WORK.md`: packages 1–4 done against a fake reader and merged (agent #64, #66, #67, #68; MillWright #20), package 5 docs merged (agent #70, MillWright #21); contract 1.3 (FloorWatch #85, e57b74f) vendored and merged (agent #71, MillWright #22); only packages 0 and 6 are left, and they wait for the reader).
 
 Repos: agent = `ajitesh1020/linuxcnc-status-monitor`; MillWright = `ajitesh1020/millwright`.
 The user merges, except millwright #1 and #2, merged by this session on 26 Oct at the user's request.
@@ -608,10 +608,10 @@ every point, to be confirmed by the spike.
 |---|---|---|---|---|
 | 0 | Spike with the real reader | — | — | Waits for the reader to be wired |
 | 1 | `agent_srx.py` client + `tools/fake_srx.py` | `feat/srx-client` → `main` | agent #64 | **Merged** 28 Nov |
-| 2 | `agent_scan_tcp.py` production reading → spool | `feat/scan-tcp` → `main` | agent #65, #67 | **Merged** 28 Nov via #67 (#65 had merged into `feat/srx-client` *after* #64 merged it, so it missed `main`). Contract 1.3 features on since `feat/contract-1.3` (re-vendor) |
+| 2 | `agent_scan_tcp.py` production reading → spool | `feat/scan-tcp` → `main` | agent #65, #67 | **Merged** 28 Nov via #67 (#65 had merged into `feat/srx-client` *after* #64 merged it, so it missed `main`). Contract 1.3 features on since agent #71 (merged 28 Nov) |
 | 3 | CLI `--scanner-*` (enrol, info, test, calibrate, backup / restore, wizard steps) | `feat/scanner-cli` → `feat/scan-tcp` | agent #66 | **Merged** 28 Nov (into `feat/scan-tcp`, reached `main` with #67) |
 | 4 | MillWright Scanner setup wizard (Tools → Scanner Setup…) + agent `--owner/--pid` for backup / restore | `feat/scanner-setup` → `main` (MillWright); `feat/scanner-cli-owner` → `main` | MillWright #20, agent #68 | **Merged** 28 Nov |
-| 5 | Docs: `docs/SCANNER_SRX.md`, config keys, NETWORK / TROUBLESHOOTING, CHANGELOG; MillWright user manual | `docs/scanner-srx` → `main`; MillWright `docs/scanner-setup` → `main` | agent #70, MillWright #21 | Agent #70 **merged** 28 Nov; MillWright #21 in review (packaging needed nothing: the .deb already ships the three modules since #64/#66, MillWright's copies the whole package) |
+| 5 | Docs: `docs/SCANNER_SRX.md`, config keys, NETWORK / TROUBLESHOOTING, CHANGELOG; MillWright user manual | `docs/scanner-srx` → `main`; MillWright `docs/scanner-setup` → `main` | agent #70, MillWright #21 | **Merged** 28 Nov (packaging needed nothing: the .deb already ships the three modules since #64/#66, MillWright's copies the whole package) |
 | 6 | Acceptance with the real reader | — | — | Waits for the reader |
 
 Found and decided:
@@ -629,10 +629,11 @@ Found and decided:
 
 Pending for the scanner:
 - (Done 28 Nov) Contract 1.3 merged in FloorWatch #85 (e57b74f, no `mac` field: the MAC stays agent-side);
-  re-vendored on agent `feat/contract-1.3` (in review), which also cuts `model` / `firmware` to the schema's
-  64 characters, documents `scanner_tcp` in PROTOCOL.md and tests it end to end.
-  Still to do: re-vendor into MillWright (it carries a copy; it sends no scanner events, so nothing changes there
-  but the copy).
+  re-vendored in agent #71 (merged 28 Nov), which also cuts `model` / `firmware` to the schema's 64 characters,
+  documents `scanner_tcp` in PROTOCOL.md and tests it end to end; MillWright re-vendored in #22 (merged 28 Nov;
+  copy only, it sends no scanner events).
+- Merging: three browser merges (28 Nov) never reached GitHub; `gh pr merge <n> -R <repo> --merge` from the
+  terminal worked. Always confirm with `gh pr view` before building on a "merged" PR.
 - When the reader arrives (the user wires it; ask before each physical step and before any change to this PC's
   network): package 0 (fill the "Spike" column of section 7), then package 6.
 - After `--scanner-enroll`, restart the agent (`systemctl --user restart lcnc-status-agent`): config is read at
